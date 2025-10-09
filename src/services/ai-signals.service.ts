@@ -115,4 +115,20 @@ class AISignalsService {
   }
 }
 
-export const aiSignalsService = new AISignalsService();
+// Lazy initialization - only create instance in browser
+let aiSignalsServiceInstance: AISignalsService | null = null;
+
+function getAISignalsService(): AISignalsService {
+  if (typeof window === 'undefined') {
+    throw new Error('AISignalsService requires browser environment');
+  }
+
+  if (!aiSignalsServiceInstance) {
+    aiSignalsServiceInstance = new AISignalsService();
+  }
+  return aiSignalsServiceInstance;
+}
+
+export const aiSignalsService = typeof window !== 'undefined'
+  ? getAISignalsService()
+  : null as any;
