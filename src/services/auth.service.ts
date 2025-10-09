@@ -52,9 +52,13 @@ class AuthService {
   // Sign up with email and password
   async signUp(email: string, password: string, displayName?: string): Promise<User> {
     try {
+      console.log('[AuthService] Attempting signup with:', { email, hasPassword: !!password, displayName });
+
       // Create user account
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
+
+      console.log('[AuthService] User created successfully:', user.uid);
 
       // Update display name if provided
       if (displayName) {
@@ -69,7 +73,13 @@ class AuthService {
 
       return user;
     } catch (error) {
-      throw this.handleAuthError(error as AuthError);
+      const authError = error as AuthError;
+      console.error('[AuthService] Signup error:', {
+        code: authError.code,
+        message: authError.message,
+        fullError: authError,
+      });
+      throw this.handleAuthError(authError);
     }
   }
 
@@ -192,8 +202,8 @@ class AuthService {
     const errorMessages: { [key: string]: string } = {
       'auth/email-already-in-use': 'This email is already registered. Please sign in instead.',
       'auth/invalid-email': 'Please enter a valid email address.',
-      'auth/operation-not-allowed': 'Email/password sign-in is not enabled.',
-      'auth/weak-password': 'Password must be at least 8 characters long.',
+      'auth/operation-not-allowed': 'Email/password sign-in is not enabled. Please contact support.',
+      'auth/weak-password': 'Password must be at least 6 characters long.',
       'auth/user-not-found': 'No account found with this email address.',
       'auth/wrong-password': 'Incorrect password. Please try again.',
       'auth/invalid-credential': 'Invalid email or password.',
@@ -203,9 +213,15 @@ class AuthService {
       'auth/popup-closed-by-user': 'Sign-in popup was closed.',
       'auth/cancelled-popup-request': 'Another sign-in popup is already open.',
       'auth/popup-blocked': 'Sign-in popup was blocked by your browser.',
+      'auth/invalid-api-key': 'Firebase configuration error. Please contact support.',
+      'auth/app-deleted': 'Firebase app has been deleted. Please contact support.',
+      'auth/app-not-authorized': 'This app is not authorized to use Firebase Authentication.',
+      'auth/argument-error': 'Invalid authentication request.',
+      'auth/invalid-user-token': 'Your session has expired. Please sign in again.',
+      'auth/user-token-expired': 'Your session has expired. Please sign in again.',
     };
 
-    const message = errorMessages[error.code] || 'An unexpected error occurred. Please try again.';
+    const message = errorMessages[error.code] || `Authentication error: ${error.code}. ${error.message}`;
     return new Error(message);
   }
 
