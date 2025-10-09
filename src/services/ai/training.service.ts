@@ -1,14 +1,12 @@
 import { CryptoPredictionModel } from './model';
 import { TechnicalIndicators } from './indicators';
-import { MarketService } from '../market.service';
+import { marketService } from '../market.service';
 
 export class AITrainingService {
   private model: CryptoPredictionModel;
-  private marketService: MarketService;
 
   constructor() {
     this.model = new CryptoPredictionModel();
-    this.marketService = new MarketService();
   }
 
   // Fetch and prepare training data
@@ -17,7 +15,7 @@ export class AITrainingService {
     labels: number[][];
   }> {
     // Get historical candles
-    const candles = await this.marketService.getCandleData(symbol, '1h', days * 24);
+    const candles = await marketService.getCandleData(symbol, '1h', days * 24);
 
     if (candles.length < 50) {
       throw new Error('Insufficient historical data for training');
@@ -103,11 +101,11 @@ export class AITrainingService {
       await this.model.load();
 
       // Get recent candles
-      const candles = await this.marketService.getCandleData(symbol, '1h', 100);
+      const candles = await marketService.getCandleData(symbol, '1h', 100);
       const indicators = TechnicalIndicators.prepareIndicators(candles.slice(-50));
 
       // Get current price data
-      const currentPrice = await this.marketService.getCurrentPrice(symbol);
+      const currentPrice = await marketService.getCurrentPrice(symbol);
 
       // Prepare current market data
       const marketData = {

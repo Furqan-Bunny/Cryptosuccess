@@ -15,13 +15,14 @@ import {
   FaClock,
   FaCheckCircle,
   FaTimesCircle,
-  FaInfoCircle
+  FaInfoCircle,
+  FaHistory
 } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 
 export default function TradePage() {
   return (
-    <ProtectedRoute requiresPro>
+    <ProtectedRoute requirePro>
       <TradeContent />
     </ProtectedRoute>
   );

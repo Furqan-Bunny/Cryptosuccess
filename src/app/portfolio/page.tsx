@@ -20,7 +20,7 @@ import toast from 'react-hot-toast';
 
 export default function PortfolioPage() {
   return (
-    <ProtectedRoute requiresPro>
+    <ProtectedRoute requirePro>
       <PortfolioContent />
     </ProtectedRoute>
   );
@@ -82,12 +82,17 @@ function PortfolioContent() {
     if (!user) return;
 
     try {
+      const amount = parseFloat(tradeForm.amount);
+      const price = parseFloat(tradeForm.price);
+      const fee = parseFloat(tradeForm.fee || '0');
+
       const tradeData = {
         symbol: tradeForm.symbol,
         type: tradeForm.type,
-        amount: parseFloat(tradeForm.amount),
-        price: parseFloat(tradeForm.price),
-        fee: parseFloat(tradeForm.fee || '0'),
+        amount,
+        price,
+        fee,
+        totalValue: amount * price + fee,
         notes: tradeForm.notes
       };
 

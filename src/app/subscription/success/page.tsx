@@ -13,6 +13,12 @@ export default function SubscriptionSuccessPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!searchParams) {
+      setError('Invalid session');
+      setLoading(false);
+      return;
+    }
+
     const sessionId = searchParams.get('session_id');
 
     if (!sessionId) {

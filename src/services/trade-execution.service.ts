@@ -139,6 +139,7 @@ class TradeExecutionService {
         amount: order.amount,
         price: executionPrice,
         fee: fee,
+        totalValue: totalCost,
         notes: `Market order #${orderId}`
       });
 
@@ -235,12 +236,14 @@ class TradeExecutionService {
         });
 
         // Record the trade
+        const limitTotalValue = (order.amount * executionPrice) + fee;
         await portfolioService.recordTrade(order.userId, {
           symbol: order.symbol,
           type: order.side,
           amount: order.amount,
           price: executionPrice,
           fee: fee,
+          totalValue: limitTotalValue,
           notes: `Limit order #${order.id}`
         });
       }
@@ -298,12 +301,14 @@ class TradeExecutionService {
           updatedAt: serverTimestamp()
         });
 
+        const stopTotalValue = (order.amount * currentPrice) + fee;
         await portfolioService.recordTrade(order.userId, {
           symbol: order.symbol,
           type: order.side,
           amount: order.amount,
           price: currentPrice,
           fee: fee,
+          totalValue: stopTotalValue,
           notes: `Stop-loss order #${order.id}`
         });
       }

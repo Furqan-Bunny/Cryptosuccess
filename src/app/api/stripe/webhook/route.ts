@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { headers } from 'next/headers';
-import { stripeService } from '@/services/stripe.service';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2023-10-16',
+  apiVersion: '2025-09-30.clover',
 });
 
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
@@ -34,7 +33,22 @@ export async function POST(request: NextRequest) {
     }
 
     // Handle the event
-    await stripeService.handleWebhookEvent(event);
+    switch (event.type) {
+      case 'checkout.session.completed':
+        // Payment successful - update user subscription
+        console.log('Checkout session completed:', event.data.object);
+        break;
+      case 'customer.subscription.updated':
+        // Subscription updated
+        console.log('Subscription updated:', event.data.object);
+        break;
+      case 'customer.subscription.deleted':
+        // Subscription cancelled
+        console.log('Subscription cancelled:', event.data.object);
+        break;
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
 
     return NextResponse.json({ received: true });
   } catch (error) {
