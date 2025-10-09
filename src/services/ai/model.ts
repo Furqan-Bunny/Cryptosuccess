@@ -1,14 +1,26 @@
-import * as tf from '@tensorflow/tfjs';
-
 export class CryptoPredictionModel {
-  private model: tf.LayersModel | null = null;
+  private model: any | null = null;
   private isTraining = false;
+  private tf: any = null;
 
   constructor() {
-    this.initializeModel();
+    // Don't initialize immediately - wait for browser
+  }
+
+  private async ensureTensorFlow() {
+    // Only import TensorFlow in browser environment
+    if (typeof window === 'undefined') {
+      throw new Error('TensorFlow.js requires browser environment');
+    }
+
+    if (!this.tf) {
+      this.tf = await import('@tensorflow/tfjs');
+    }
+    return this.tf;
   }
 
   private async initializeModel() {
+    const tf = await this.ensureTensorFlow();
     // Create a sequential model
     this.model = tf.sequential({
       layers: [
@@ -48,7 +60,7 @@ export class CryptoPredictionModel {
   }
 
   // Prepare features from market data
-  private prepareFeatures(marketData: any[]): tf.Tensor2D {
+  private prepareFeatures(marketData: any[]): any {
     const features = marketData.map(data => [
       data.price / 100000, // Normalize price
       data.volume / 1000000, // Normalize volume
@@ -62,11 +74,17 @@ export class CryptoPredictionModel {
       data.ema200 / 100000,
     ]);
 
-    return tf.tensor2d(features);
+    return this.tf.tensor2d(features);
   }
 
   // Train the model with historical data
   async train(trainingData: any[], labels: number[][]): Promise<void> {
+    await this.ensureTensorFlow();
+
+    if (!this.model) {
+      await this.initializeModel();
+    }
+
     if (this.isTraining) {
       throw new Error('Model is already training');
     }
@@ -75,7 +93,7 @@ export class CryptoPredictionModel {
 
     try {
       const xs = this.prepareFeatures(trainingData);
-      const ys = tf.tensor2d(labels);
+      const ys = this.tf.tensor2d(labels);
 
       // Train the model
       await this.model!.fit(xs, ys, {
@@ -83,7 +101,7 @@ export class CryptoPredictionModel {
         batchSize: 32,
         validationSplit: 0.2,
         callbacks: {
-          onEpochEnd: (epoch, logs) => {
+          onEpochEnd: (epoch: number, logs: any) => {
             console.log(`Epoch ${epoch + 1}: loss = ${logs?.loss?.toFixed(4)}, accuracy = ${logs?.acc?.toFixed(4)}`);
           },
         },
@@ -107,12 +125,14 @@ export class CryptoPredictionModel {
       hold: number;
     };
   }> {
+    await this.ensureTensorFlow();
+
     if (!this.model) {
-      throw new Error('Model not initialized');
+      await this.initializeModel();
     }
 
     const features = this.prepareFeatures([marketData]);
-    const prediction = this.model.predict(features) as tf.Tensor;
+    const prediction = this.model.predict(features);
     const probabilities = await prediction.data();
 
     features.dispose();
@@ -148,6 +168,8 @@ export class CryptoPredictionModel {
 
   // Save model to browser storage
   async save(): Promise<void> {
+    await this.ensureTensorFlow();
+
     if (!this.model) {
       throw new Error('Model not initialized');
     }
@@ -156,8 +178,10 @@ export class CryptoPredictionModel {
 
   // Load model from browser storage
   async load(): Promise<void> {
+    await this.ensureTensorFlow();
+
     try {
-      this.model = await tf.loadLayersModel('localstorage://crypto-prediction-model');
+      this.model = await this.tf.loadLayersModel('localstorage://crypto-prediction-model');
     } catch (error) {
       console.log('No saved model found, using new model');
       await this.initializeModel();
