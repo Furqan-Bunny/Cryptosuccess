@@ -1,0 +1,213 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar */
+@layer base {
+  :root {
+    --color-background: 10 11 13;
+    --color-surface: 26 27 31;
+    --color-primary: 0 82 255;
+    --color-success: 0 217 100;
+    --color-warning: 255 184 0;
+    --color-error: 255 59 48;
+  }
+
+  * {
+    @apply border-gray-800;
+  }
+
+  body {
+    @apply bg-background text-text-primary;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-700 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-600;
+  }
+
+  /* Firefox scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #374151 #0A0B0D;
+  }
+
+  /* Selection color */
+  ::selection {
+    @apply bg-primary/20 text-white;
+  }
+
+  /* Focus styles */
+  *:focus {
+    @apply outline-none;
+  }
+
+  *:focus-visible {
+    @apply ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+}
+
+/* Utility classes */
+@layer utilities {
+  /* Glass morphism effect */
+  .glass {
+    @apply bg-surface/70 backdrop-blur-xl border border-gray-800;
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary to-success bg-clip-text text-transparent;
+  }
+
+  /* Card hover effect */
+  .card-hover {
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  /* Loading skeleton */
+  .skeleton {
+    @apply animate-pulse bg-gray-800 rounded;
+  }
+
+  /* Glow effect */
+  .glow {
+    @apply relative;
+  }
+
+  .glow::before {
+    content: '';
+    @apply absolute inset-0 bg-gradient-to-r from-primary to-success opacity-0 blur-xl transition-opacity duration-500;
+  }
+
+  .glow:hover::before {
+    @apply opacity-30;
+  }
+
+  /* Signal indicators */
+  .signal-buy {
+    @apply text-success bg-success/10 border-success/20;
+  }
+
+  .signal-sell {
+    @apply text-error bg-error/10 border-error/20;
+  }
+
+  .signal-hold {
+    @apply text-warning bg-warning/10 border-warning/20;
+  }
+}
+
+/* Animation classes */
+@layer utilities {
+  /* Fade in animation */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+
+  /* Slide in animation */
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-slide-in {
+    animation: slideIn 0.3s ease-out forwards;
+  }
+
+  /* Pulse animation for live indicators */
+  @keyframes livePulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  .animate-live-pulse {
+    animation: livePulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
+
+/* Chart.js custom styles */
+@layer components {
+  .chart-container {
+    @apply relative h-96 w-full;
+  }
+
+  .chart-container canvas {
+    @apply !w-full !h-full;
+  }
+}
+
+/* Custom component styles */
+@layer components {
+  /* Button variants */
+  .btn {
+    @apply inline-flex items-center justify-center rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary text-white hover:bg-primary-dark focus:ring-primary;
+  }
+
+  .btn-secondary {
+    @apply btn bg-surface text-text-primary hover:bg-surface-hover focus:ring-gray-600;
+  }
+
+  .btn-success {
+    @apply btn bg-success text-white hover:bg-success-dark focus:ring-success;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-surface text-text-secondary hover:text-text-primary focus:ring-gray-600;
+  }
+
+  /* Input styles */
+  .input {
+    @apply w-full px-4 py-2 bg-surface border border-gray-800 rounded-lg text-text-primary placeholder-text-muted focus:border-primary focus:ring-1 focus:ring-primary transition-colors;
+  }
+
+  .input-error {
+    @apply border-error focus:border-error focus:ring-error;
+  }
+
+  /* Card styles */
+  .card {
+    @apply bg-surface rounded-xl border border-gray-800 overflow-hidden;
+  }
+
+  .card-interactive {
+    @apply card transition-all duration-300 hover:border-gray-700 hover:shadow-lg hover:shadow-black/20;
+  }
+}

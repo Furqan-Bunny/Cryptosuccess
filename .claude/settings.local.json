@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx bmad-method install:*)",
+      "Bash(mkdir:*)",
+      "Bash(npm install:*)",
+      "Bash(curl:*)",
+      "Bash(npm init:*)",
+      "Bash(npm run build:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
