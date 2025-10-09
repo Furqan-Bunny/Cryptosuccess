@@ -1,8 +1,8 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getFunctions } from 'firebase/functions';
-import { getAnalytics, isSupported } from 'firebase/analytics';
+import { FirebaseApp, initializeApp, getApps } from 'firebase/app';
+import { Auth, getAuth } from 'firebase/auth';
+import { Firestore, getFirestore } from 'firebase/firestore';
+import { Functions, getFunctions } from 'firebase/functions';
+import { Analytics, getAnalytics, isSupported } from 'firebase/analytics';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -14,30 +14,85 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Lazy initialization
+let app: FirebaseApp | null = null;
+let authInstance: Auth | null = null;
+let dbInstance: Firestore | null = null;
+let functionsInstance: Functions | null = null;
 
-// Initialize Firebase services
-export const auth = getAuth(app);
-export const db = getFirestore(app);
-export const functions = getFunctions(app);
-
-// Initialize Analytics (only in browser and if supported)
-export const analytics = isSupported().then(yes => yes ? getAnalytics(app) : null);
-
-// Enable Firestore offline persistence
-if (typeof window !== 'undefined') {
-  import('firebase/firestore').then(({ enableIndexedDbPersistence }) => {
-    enableIndexedDbPersistence(db).catch((err) => {
-      if (err.code === 'failed-precondition') {
-        // Multiple tabs open, persistence can only be enabled in one tab at a time.
-        console.warn('Firestore persistence failed: Multiple tabs open');
-      } else if (err.code === 'unimplemented') {
-        // The current browser doesn't support persistence
-        console.warn('Firestore persistence not supported in this browser');
-      }
-    });
-  });
+function getApp(): FirebaseApp {
+  if (!app) {
+    // Check if Firebase is already initialized
+    const apps = getApps();
+    if (apps.length > 0) {
+      app = apps[0];
+    } else {
+      app = initializeApp(firebaseConfig);
+    }
+  }
+  return app;
 }
 
-export default app;
+// Lazy getters
+export function getAuthInstance(): Auth {
+  if (!authInstance) {
+    authInstance = getAuth(getApp());
+  }
+  return authInstance;
+}
+
+export function getDbInstance(): Firestore {
+  if (!dbInstance) {
+    dbInstance = getFirestore(getApp());
+
+    // Enable Firestore offline persistence (only in browser)
+    if (typeof window !== 'undefined') {
+      import('firebase/firestore').then(({ enableIndexedDbPersistence }) => {
+        enableIndexedDbPersistence(dbInstance!).catch((err) => {
+          if (err.code === 'failed-precondition') {
+            console.warn('Firestore persistence failed: Multiple tabs open');
+          } else if (err.code === 'unimplemented') {
+            console.warn('Firestore persistence not supported in this browser');
+          }
+        });
+      });
+    }
+  }
+  return dbInstance;
+}
+
+export function getFunctionsInstance(): Functions {
+  if (!functionsInstance) {
+    functionsInstance = getFunctions(getApp());
+  }
+  return functionsInstance;
+}
+
+// Analytics (only in browser and if supported)
+export const analytics = typeof window !== 'undefined'
+  ? isSupported().then(yes => yes ? getAnalytics(getApp()) : null)
+  : Promise.resolve(null);
+
+// Export lazy instances as named exports to maintain compatibility
+export const auth = new Proxy({} as Auth, {
+  get: (target, prop) => {
+    const authInstance = getAuthInstance();
+    return authInstance[prop as keyof Auth];
+  }
+});
+
+export const db = new Proxy({} as Firestore, {
+  get: (target, prop) => {
+    const dbInstance = getDbInstance();
+    return dbInstance[prop as keyof Firestore];
+  }
+});
+
+export const functions = new Proxy({} as Functions, {
+  get: (target, prop) => {
+    const functionsInstance = getFunctionsInstance();
+    return functionsInstance[prop as keyof Functions];
+  }
+});
+
+export default getApp;

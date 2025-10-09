@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import React, { useState, useEffect } from 'react';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import PriceCard from '@/components/market/PriceCard';
