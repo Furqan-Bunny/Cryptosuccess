@@ -14,11 +14,11 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Lazy initialization
-let app: FirebaseApp | null = null;
-let authInstance: Auth | null = null;
-let dbInstance: Firestore | null = null;
-let functionsInstance: Functions | null = null;
+// Lazy initialization - only initialize when first accessed
+let app: FirebaseApp | undefined;
+let authInstance: Auth | undefined;
+let dbInstance: Firestore | undefined;
+let functionsInstance: Functions | undefined;
 
 function getApp(): FirebaseApp {
   if (!app) {
@@ -33,53 +33,38 @@ function getApp(): FirebaseApp {
   return app;
 }
 
-// Lazy getters
-export function getAuthInstance(): Auth {
+function initializeAuth(): Auth {
   if (!authInstance) {
     authInstance = getAuth(getApp());
   }
   return authInstance;
 }
 
-export function getDbInstance(): Firestore {
+function initializeDb(): Firestore {
   if (!dbInstance) {
     dbInstance = getFirestore(getApp());
   }
   return dbInstance;
 }
 
-export function getFunctionsInstance(): Functions {
+function initializeFunctions(): Functions {
   if (!functionsInstance) {
     functionsInstance = getFunctions(getApp());
   }
   return functionsInstance;
 }
 
+// Export direct instances (will be initialized on first access in browser)
+export const auth = typeof window !== 'undefined' ? initializeAuth() : ({} as Auth);
+export const db = typeof window !== 'undefined' ? initializeDb() : ({} as Firestore);
+export const functions = typeof window !== 'undefined' ? initializeFunctions() : ({} as Functions);
+
 // Analytics (only in browser and if supported)
 export const analytics = typeof window !== 'undefined'
   ? isSupported().then(yes => yes ? getAnalytics(getApp()) : null)
   : Promise.resolve(null);
 
-// Export lazy instances as named exports to maintain compatibility
-export const auth = new Proxy({} as Auth, {
-  get: (target, prop) => {
-    const authInstance = getAuthInstance();
-    return authInstance[prop as keyof Auth];
-  }
-});
-
-export const db = new Proxy({} as Firestore, {
-  get: (target, prop) => {
-    const dbInstance = getDbInstance();
-    return dbInstance[prop as keyof Firestore];
-  }
-});
-
-export const functions = new Proxy({} as Functions, {
-  get: (target, prop) => {
-    const functionsInstance = getFunctionsInstance();
-    return functionsInstance[prop as keyof Functions];
-  }
-});
+// Export helper functions for SSR compatibility
+export { initializeAuth as getAuthInstance, initializeDb as getDbInstance, initializeFunctions as getFunctionsInstance };
 
 export default getApp;
