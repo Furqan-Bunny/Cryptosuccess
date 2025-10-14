@@ -146,7 +146,7 @@ class AuthService {
       subscription: {
         status: 'free',
         signalsUsedToday: 0,
-        lastResetDate: new Date(),
+        lastResetDate: serverTimestamp(),
       },
       preferences: {
         notifications: true,
