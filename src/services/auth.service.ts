@@ -140,11 +140,9 @@ class AuthService {
 
   // Create user profile in Firestore
   private async createUserProfile(user: User): Promise<void> {
-    const userProfile: UserProfile = {
+    const userProfile: any = {
       uid: user.uid,
       email: user.email!,
-      displayName: user.displayName || undefined,
-      photoURL: user.photoURL || undefined,
       subscription: {
         status: 'free',
         signalsUsedToday: 0,
@@ -156,20 +154,21 @@ class AuthService {
         watchlist: ['ETH', 'SOL', 'BNB'],
       },
       metadata: {
-        createdAt: new Date(),
-        lastLogin: new Date(),
+        createdAt: serverTimestamp(),
+        lastLogin: serverTimestamp(),
         totalSignalsViewed: 0,
       },
     };
 
-    await setDoc(doc(db, 'users', user.uid), {
-      ...userProfile,
-      metadata: {
-        ...userProfile.metadata,
-        createdAt: serverTimestamp(),
-        lastLogin: serverTimestamp(),
-      },
-    });
+    // Only add optional fields if they exist (Firestore doesn't allow undefined)
+    if (user.displayName) {
+      userProfile.displayName = user.displayName;
+    }
+    if (user.photoURL) {
+      userProfile.photoURL = user.photoURL;
+    }
+
+    await setDoc(doc(db, 'users', user.uid), userProfile);
   }
 
   // Get user profile from Firestore
