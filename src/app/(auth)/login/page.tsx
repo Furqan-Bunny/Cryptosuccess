@@ -9,6 +9,8 @@ import LoadingSpinner from '@/components/shared/LoadingSpinner';
 import { FaGoogle, FaEye, FaEyeSlash } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 
+// v2.0 - Fixed TensorFlow initialization
+
 interface LoginFormData {
   email: string;
   password: string;
