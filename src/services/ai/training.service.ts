@@ -97,6 +97,11 @@ export class AITrainingService {
     timestamp: Date;
   }> {
     try {
+      // Ensure we're in a browser environment
+      if (typeof window === 'undefined') {
+        throw new Error('AI prediction requires browser environment');
+      }
+
       // Load the model
       await this.model.load();
 

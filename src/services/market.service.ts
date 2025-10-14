@@ -257,11 +257,14 @@ class MarketService {
 
       // Try to use AI signal generation if available
       try {
-        // Dynamic import to avoid issues if AI service is not ready
-        const { aiSignalsService } = await import('./ai-signals.service');
-        return await aiSignalsService.generateAISignal(symbol, candles);
+        // Only attempt AI in browser environment
+        if (typeof window !== 'undefined') {
+          // Dynamic import to avoid issues if AI service is not ready
+          const { aiSignalsService } = await import('./ai-signals.service');
+          return await aiSignalsService.generateAISignal(symbol, candles);
+        }
       } catch (aiError) {
-        console.warn('AI signal generation not available, falling back to basic signals');
+        console.warn('AI signal generation not available, falling back to basic signals:', aiError);
       }
 
       // Fallback to basic signal logic

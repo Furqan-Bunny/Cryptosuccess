@@ -115,7 +115,7 @@ class AISignalsService {
   }
 }
 
-// Lazy initialization - only create instance in browser
+// Lazy initialization - only create instance when first accessed
 let aiSignalsServiceInstance: AISignalsService | null = null;
 
 function getAISignalsService(): AISignalsService {
@@ -129,6 +129,18 @@ function getAISignalsService(): AISignalsService {
   return aiSignalsServiceInstance;
 }
 
-export const aiSignalsService = typeof window !== 'undefined'
-  ? getAISignalsService()
-  : null as any;
+// Export a getter function instead of the instance
+export const aiSignalsService = {
+  generateAISignal: async (...args: Parameters<AISignalsService['generateAISignal']>) => {
+    const instance = getAISignalsService();
+    return instance.generateAISignal(...args);
+  },
+  trainModel: async (...args: Parameters<AISignalsService['trainModel']>) => {
+    const instance = getAISignalsService();
+    return instance.trainModel(...args);
+  },
+  trainAllModels: async (...args: Parameters<AISignalsService['trainAllModels']>) => {
+    const instance = getAISignalsService();
+    return instance.trainAllModels(...args);
+  }
+};

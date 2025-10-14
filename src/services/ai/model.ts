@@ -14,7 +14,14 @@ export class CryptoPredictionModel {
     }
 
     if (!this.tf) {
-      this.tf = await import('@tensorflow/tfjs');
+      try {
+        this.tf = await import('@tensorflow/tfjs');
+        // Wait for TensorFlow to be ready
+        await this.tf.ready();
+      } catch (error) {
+        console.error('Failed to initialize TensorFlow.js:', error);
+        throw new Error('TensorFlow.js initialization failed. Please refresh the page.');
+      }
     }
     return this.tf;
   }
