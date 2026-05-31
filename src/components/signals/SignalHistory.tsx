@@ -34,6 +34,8 @@ export default function SignalHistory({ userId }: { userId: string }) {
     let mounted = true;
     async function load() {
       try {
+        // Resolve outcomes for pending signals older than 24h before reading stats.
+        await signalHistoryService.evaluatePendingSignals(userId).catch(() => {});
         const [sigs, st] = await Promise.all([
           signalHistoryService.getUserSignals(userId, 20),
           signalHistoryService.getSignalStats(userId),

@@ -1,13 +1,33 @@
 'use client';
 
+import { useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { FaUser, FaBell, FaCrown, FaCreditCard, FaShieldAlt } from 'react-icons/fa';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
+import { stripeService } from '@/services/stripe.service';
 
 export default function SettingsPage() {
   const { user, profile } = useAuth();
 
   const isPro = profile?.subscription?.status === 'pro';
+  const customerId = profile?.subscription?.customerId;
+  const [billingLoading, setBillingLoading] = useState(false);
+
+  const handleManageBilling = async () => {
+    if (!customerId) {
+      toast.error('No billing account yet — it appears after your first payment.');
+      return;
+    }
+    setBillingLoading(true);
+    try {
+      await stripeService.redirectToCustomerPortal(customerId);
+    } catch (e) {
+      console.error('Billing portal error:', e);
+      toast.error('Could not open the billing portal. Please try again.');
+      setBillingLoading(false);
+    }
+  };
 
   return (
     <>
@@ -97,9 +117,13 @@ export default function SettingsPage() {
 
             <div className="pt-2">
               {isPro ? (
-                <button className="btn-secondary px-4 py-2 text-sm flex items-center space-x-2">
+                <button
+                  onClick={handleManageBilling}
+                  disabled={billingLoading}
+                  className="btn-secondary px-4 py-2 text-sm flex items-center space-x-2 disabled:opacity-50"
+                >
                   <FaCreditCard />
-                  <span>Manage Billing</span>
+                  <span>{billingLoading ? 'Opening…' : 'Manage Billing'}</span>
                 </button>
               ) : (
                 <Link href="/pricing" className="btn-primary px-4 py-2 text-sm inline-flex items-center space-x-2">

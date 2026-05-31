@@ -96,6 +96,7 @@ class AISignalsService {
         confidence: Math.round(adjustedConfidence * 10) / 10,
         reasoning,
         timestamp: new Date(),
+        engine: 'ai',
       };
     } catch (error) {
       console.error('Error in AI signal generation:', error);
@@ -108,7 +109,11 @@ class AISignalsService {
   }
 
   async trainAllModels(): Promise<void> {
-    await this.aiTrainingService.trainAllModels(['ETH', 'SOL', 'BNB']);
+    await this.aiTrainingService.trainAllModels(['BTC', 'ETH', 'SOL', 'BNB']);
+  }
+
+  async hasTrainedModel(): Promise<boolean> {
+    return this.aiTrainingService.hasTrainedModel();
   }
 }
 
@@ -134,5 +139,8 @@ export const aiSignalsService = {
   },
   trainAllModels: async (...args: Parameters<AISignalsService['trainAllModels']>) => {
     return getAISignalsService().trainAllModels(...args);
+  },
+  hasTrainedModel: async () => {
+    return getAISignalsService().hasTrainedModel();
   },
 };

@@ -43,6 +43,7 @@ export interface TradeSignal {
   stopLoss: number;
   reasoning: string;
   timestamp: Date;
+  engine?: 'ai' | 'technical';
 }
 
 class MarketService {
@@ -163,25 +164,24 @@ class MarketService {
   // Calculate technical indicators for signal generation
   // Uses the shared TechnicalIndicators class for consistent, correct calculations
   calculateTechnicalIndicators(candles: CandleData[]): {
-    sma20: number;
-    sma50: number;
+    ema20: number;
+    ema50: number;
     rsi: number;
     macd: { value: number; signal: number; histogram: number };
   } {
     const closePrices = candles.map(c => c.close);
 
-    // Use proper EMA calculations from TechnicalIndicators
     const ema20arr = TechnicalIndicators.calculateEMA(closePrices, 20);
     const ema50arr = TechnicalIndicators.calculateEMA(closePrices, 50);
-    const sma20 = ema20arr.length > 0 ? ema20arr[ema20arr.length - 1] : closePrices[closePrices.length - 1];
-    const sma50 = ema50arr.length > 0 ? ema50arr[ema50arr.length - 1] : closePrices[closePrices.length - 1];
+    const ema20 = ema20arr.length > 0 ? ema20arr[ema20arr.length - 1] : closePrices[closePrices.length - 1];
+    const ema50 = ema50arr.length > 0 ? ema50arr[ema50arr.length - 1] : closePrices[closePrices.length - 1];
 
     const rsi = TechnicalIndicators.calculateRSI(closePrices);
     const macdResult = TechnicalIndicators.calculateMACD(closePrices);
 
     return {
-      sma20,
-      sma50,
+      ema20,
+      ema50,
       rsi,
       macd: { value: macdResult.macd, signal: macdResult.signal, histogram: macdResult.histogram },
     };
@@ -227,11 +227,11 @@ class MarketService {
       }
 
       // Moving average crossover
-      if (indicators.sma20 > indicators.sma50 && action === 'HOLD') {
+      if (indicators.ema20 > indicators.ema50 && action === 'HOLD') {
         action = 'BUY';
         confidence = 60;
         reasoning = 'Bullish moving average crossover';
-      } else if (indicators.sma20 < indicators.sma50 && action === 'HOLD') {
+      } else if (indicators.ema20 < indicators.ema50 && action === 'HOLD') {
         action = 'SELL';
         confidence = 60;
         reasoning = 'Bearish moving average crossover';
@@ -257,8 +257,9 @@ class MarketService {
         price: currentPrice.price,
         targetPrice: currentPrice.price * targetMultiplier,
         stopLoss: currentPrice.price * stopLossMultiplier,
-        reasoning,
+        reasoning: reasoning || 'No strong technical signal; market is neutral.',
         timestamp: new Date(),
+        engine: 'technical',
       };
     } catch (error) {
       console.error('Error generating signal:', error);

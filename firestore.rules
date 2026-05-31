@@ -56,7 +56,11 @@ service cloud.firestore {
     match /signals/{signalId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn();
-      allow write: if false; // Only backend/admin can modify after creation
+      // Owner may only update outcome-evaluation fields on their own signals.
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['outcome', 'profitLossPercent', 'priceAt24h', 'evaluatedAt']);
+      // No delete.
     }
 
     // Subscription logs (created by stripe.service.ts)
