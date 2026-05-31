@@ -20,8 +20,11 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId);
       allow update: if isOwner(userId) &&
-        // Prevent users from directly modifying subscription status
-        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription']));
+        // Allow all updates EXCEPT direct subscription status/planId/customerId changes
+        // Users CAN update signalsUsedToday and lastResetDate (for daily limit tracking)
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription']) ||
+         request.resource.data.subscription.diff(resource.data.subscription).affectedKeys()
+           .hasOnly(['signalsUsedToday', 'lastResetDate']));
     }
 
     // User preferences
@@ -29,10 +32,37 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
 
-    // Trading history (pro users only)
+    // Trading history - top-level collection (used by portfolio.service.ts)
+    match /trades/{tradeId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Trading history - subcollection (legacy, pro users only)
     match /users/{userId}/trades/{document=**} {
       allow read: if isOwner(userId);
       allow write: if isOwner(userId) && isProUser();
+    }
+
+    // Orders collection (used by trade-execution.service.ts)
+    match /orders/{orderId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Signals collection (for signal history tracking)
+    match /signals/{signalId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow write: if false; // Only backend/admin can modify after creation
+    }
+
+    // Subscription logs (created by stripe.service.ts)
+    match /subscription_logs/{logId} {
+      allow read: if false; // Admin only
+      allow create: if isSignedIn();
     }
 
     // Public market data (read-only)
@@ -44,6 +74,13 @@ service cloud.firestore {
     // AI training data (admin only)
     match /aiTrainingData/{document=**} {
       allow read, write: if false;
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
   }
 }

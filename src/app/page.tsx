@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { FaBolt, FaChartLine, FaShieldAlt, FaRocket } from 'react-icons/fa';
+import { SUBSCRIPTION_PLANS } from '@/types/subscription.types';
 
 export default function HomePage() {
   return (
@@ -148,29 +149,17 @@ export default function HomePage() {
 
           <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
             <PricingCard
-              title="Free"
+              title={SUBSCRIPTION_PLANS.free.name}
               price="$0"
-              features={[
-                '5 signals per day',
-                'Basic technical indicators',
-                'ETH, SOL, BNB support',
-                'Email support',
-              ]}
+              features={SUBSCRIPTION_PLANS.free.features}
               buttonText="Start Free"
               buttonHref="/register"
               variant="secondary"
             />
             <PricingCard
-              title="Pro"
-              price="$29"
-              features={[
-                'Unlimited signals',
-                'Advanced indicators',
-                'All cryptocurrencies',
-                'Real-time notifications',
-                'Priority support',
-                'Export data',
-              ]}
+              title={SUBSCRIPTION_PLANS.pro.name}
+              price={`$${SUBSCRIPTION_PLANS.pro.price.monthly}`}
+              features={SUBSCRIPTION_PLANS.pro.features}
               buttonText="Go Pro"
               buttonHref="/register"
               variant="primary"

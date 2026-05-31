@@ -3,7 +3,6 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useState, useEffect } from 'react';
-import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { tradeExecutionService, Order, ExecutionResult } from '@/services/trade-execution.service';
@@ -23,14 +22,6 @@ import {
 import toast from 'react-hot-toast';
 
 export default function TradePage() {
-  return (
-    <ProtectedRoute requirePro>
-      <TradeContent />
-    </ProtectedRoute>
-  );
-}
-
-function TradeContent() {
   const { user } = useAuth();
   const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop-loss'>('market');
   const [orderSide, setOrderSide] = useState<'buy' | 'sell'>('buy');
@@ -158,7 +149,7 @@ function TradeContent() {
   const orderHistory = orders.filter(o => o.status !== 'pending');
 
   return (
-    <div className="min-h-screen bg-background">
+    <>
       {/* Header */}
       <div className="bg-surface border-b border-gray-800">
         <div className="container mx-auto px-4 py-6">
@@ -644,6 +635,6 @@ function TradeContent() {
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }

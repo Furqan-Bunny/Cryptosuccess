@@ -1,5 +1,6 @@
 import { CandleData, TradeSignal } from './market.service';
 import { AITrainingService } from './ai/training.service';
+import { getCoinProfile } from './ai/coin-profiles';
 
 class AISignalsService {
   private aiTrainingService: AITrainingService;
@@ -10,70 +11,81 @@ class AISignalsService {
 
   async generateAISignal(symbol: string, candles: CandleData[]): Promise<TradeSignal> {
     try {
-      // Generate AI prediction
       const prediction = await this.aiTrainingService.generatePrediction(symbol);
-
       const currentPrice = candles[candles.length - 1].close;
-
-      let targetPrice: number;
-      let stopLoss: number;
-      let reasoning: string;
-
-      // Convert AI prediction to trading signal
       const action = prediction.action.toUpperCase() as 'BUY' | 'SELL' | 'HOLD';
 
-      // Build comprehensive reasoning
-      const rsiStatus = prediction.indicators.rsi > 70 ? 'overbought' :
-                       prediction.indicators.rsi < 30 ? 'oversold' : 'neutral';
+      const atr = prediction.indicators.atr || 0;
+      const adx = prediction.indicators.adx || 0;
+      const rsi = prediction.indicators.rsi || 50;
+      const macdHist = prediction.indicators.macd?.histogram || 0;
+      const ema50 = prediction.indicators.ema50 || currentPrice;
+      const ema200 = prediction.indicators.ema200 || currentPrice;
+      const stochK = prediction.indicators.stochastic?.k || 50;
+      const profile = getCoinProfile(symbol);
 
-      const macdStatus = prediction.indicators.macd.histogram > 0 ? 'bullish' : 'bearish';
+      // --- Confidence adjustments ---
+      let adjustedConfidence = Math.min(prediction.confidence, 85); // Hard cap at 85%
 
-      const trendStatus = prediction.indicators.ema50 > prediction.indicators.ema200 ?
-                         'uptrend (EMA50 > EMA200)' : 'downtrend (EMA50 < EMA200)';
+      // ADX penalty for weak trends
+      if (adx < 20) {
+        adjustedConfidence *= (adx / 20);
+      }
+
+      // Multi-indicator consensus
+      let consensusScore = 0;
+      if (action === 'BUY') {
+        if (rsi < 70) consensusScore++;
+        if (macdHist > 0) consensusScore++;
+        if (ema50 > ema200) consensusScore++;
+        if (stochK < 80) consensusScore++;
+        if (adx > 20) consensusScore++;
+      } else if (action === 'SELL') {
+        if (rsi > 30) consensusScore++;
+        if (macdHist < 0) consensusScore++;
+        if (ema50 < ema200) consensusScore++;
+        if (stochK > 20) consensusScore++;
+        if (adx > 20) consensusScore++;
+      }
+
+      if (consensusScore <= 1) adjustedConfidence *= 0.8;
+      else if (consensusScore === 2) adjustedConfidence *= 0.9;
+      else if (consensusScore >= 4) adjustedConfidence *= 1.05;
+      adjustedConfidence = Math.min(Math.max(adjustedConfidence, 5), 85);
+
+      // --- ATR-based stops and targets ---
+      let targetPrice: number;
+      let stopLoss: number;
+      const safeATR = atr > 0 ? atr : currentPrice * (profile.typicalATRPercent / 100);
 
       switch (action) {
         case 'BUY':
-          // Dynamic target based on confidence and volatility
-          const buyMultiplier = 1 + (0.02 + (prediction.confidence / 100) * 0.08); // 2-10%
-          targetPrice = currentPrice * buyMultiplier;
-          stopLoss = currentPrice * 0.97; // 3% stop loss
-
-          reasoning = `AI model shows ${prediction.confidence.toFixed(1)}% buy confidence. ` +
-                     `RSI at ${prediction.indicators.rsi?.toFixed(1)} (${rsiStatus}), ` +
-                     `MACD ${macdStatus}, ` +
-                     `${trendStatus}. ` +
-                     `Volume analysis suggests accumulation phase.`;
+          stopLoss = currentPrice - 2 * safeATR;
+          targetPrice = currentPrice + 3 * safeATR; // 1.5:1 reward/risk
           break;
-
         case 'SELL':
-          // Dynamic target based on confidence
-          const sellMultiplier = 1 - (0.02 + (prediction.confidence / 100) * 0.08); // 2-10%
-          targetPrice = currentPrice * sellMultiplier;
-          stopLoss = currentPrice * 1.03; // 3% stop loss
-
-          reasoning = `AI model shows ${prediction.confidence.toFixed(1)}% sell confidence. ` +
-                     `RSI at ${prediction.indicators.rsi?.toFixed(1)} (${rsiStatus}), ` +
-                     `MACD ${macdStatus}, ` +
-                     `${trendStatus}. ` +
-                     `Price near Bollinger upper band at ${prediction.indicators.bollinger.upper.toFixed(2)}.`;
+          stopLoss = currentPrice + 2 * safeATR;
+          targetPrice = currentPrice - 3 * safeATR;
           break;
-
-        default: // HOLD
-          targetPrice = currentPrice * 1.02; // 2% upside
-          stopLoss = currentPrice * 0.98; // 2% downside
-
-          reasoning = `AI model suggests holding with ${prediction.confidence.toFixed(1)}% confidence. ` +
-                     `RSI at ${prediction.indicators.rsi?.toFixed(1)} (${rsiStatus}), ` +
-                     `MACD ${macdStatus}. ` +
-                     `Market showing consolidation between ${prediction.indicators.bollinger.lower.toFixed(2)} ` +
-                     `and ${prediction.indicators.bollinger.upper.toFixed(2)}.`;
+        default:
+          stopLoss = currentPrice - 1.5 * safeATR;
+          targetPrice = currentPrice + 1.5 * safeATR;
       }
 
-      // Add risk assessment
-      const volatility = this.calculateVolatility(candles.slice(-20));
-      if (volatility > 0.05) {
-        reasoning += ' High volatility detected - consider smaller position size.';
-      }
+      // --- Enhanced reasoning ---
+      const rsiStatus = rsi > 70 ? 'overbought' : rsi < 30 ? 'oversold' : 'neutral';
+      const macdStatus = macdHist > 0 ? 'bullish' : 'bearish';
+      const trendStatus = ema50 > ema200 ? 'uptrend' : 'downtrend';
+      const atrPercent = currentPrice > 0 ? ((safeATR / currentPrice) * 100).toFixed(2) : '0';
+
+      const reasoning =
+        `AI: ${adjustedConfidence.toFixed(1)}% ${action.toLowerCase()} confidence. ` +
+        `RSI: ${rsi.toFixed(1)} (${rsiStatus}). MACD: ${macdStatus} (hist: ${macdHist.toFixed(2)}). ` +
+        `Trend: ${trendStatus}. ADX: ${adx.toFixed(1)} (${adx >= 25 ? 'strong' : 'weak'} trend). ` +
+        `ATR: $${safeATR.toFixed(2)} (${atrPercent}%). ` +
+        `Consensus: ${consensusScore}/5 indicators agree. ` +
+        `Stop: ${((Math.abs(stopLoss - currentPrice) / currentPrice) * 100).toFixed(1)}%, ` +
+        `Target: ${((Math.abs(targetPrice - currentPrice) / currentPrice) * 100).toFixed(1)}%.`;
 
       return {
         symbol,
@@ -81,7 +93,7 @@ class AISignalsService {
         price: currentPrice,
         targetPrice,
         stopLoss,
-        confidence: prediction.confidence,
+        confidence: Math.round(adjustedConfidence * 10) / 10,
         reasoning,
         timestamp: new Date(),
       };
@@ -91,56 +103,36 @@ class AISignalsService {
     }
   }
 
-  private calculateVolatility(candles: CandleData[]): number {
-    const returns = [];
-    for (let i = 1; i < candles.length; i++) {
-      returns.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
-    }
-
-    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / returns.length;
-
-    return Math.sqrt(variance);
-  }
-
-  // Train the AI model with historical data
   async trainModel(symbol: string): Promise<void> {
     await this.aiTrainingService.trainModel(symbol);
   }
 
-  // Batch train for all supported symbols
   async trainAllModels(): Promise<void> {
-    const symbols = ['ETH', 'SOL', 'BNB'];
-    await this.aiTrainingService.trainAllModels(symbols);
+    await this.aiTrainingService.trainAllModels(['ETH', 'SOL', 'BNB']);
   }
 }
 
-// Lazy initialization - only create instance when first accessed
+// Lazy initialization
 let aiSignalsServiceInstance: AISignalsService | null = null;
 
 function getAISignalsService(): AISignalsService {
   if (typeof window === 'undefined') {
     throw new Error('AISignalsService requires browser environment');
   }
-
   if (!aiSignalsServiceInstance) {
     aiSignalsServiceInstance = new AISignalsService();
   }
   return aiSignalsServiceInstance;
 }
 
-// Export a getter function instead of the instance
 export const aiSignalsService = {
   generateAISignal: async (...args: Parameters<AISignalsService['generateAISignal']>) => {
-    const instance = getAISignalsService();
-    return instance.generateAISignal(...args);
+    return getAISignalsService().generateAISignal(...args);
   },
   trainModel: async (...args: Parameters<AISignalsService['trainModel']>) => {
-    const instance = getAISignalsService();
-    return instance.trainModel(...args);
+    return getAISignalsService().trainModel(...args);
   },
   trainAllModels: async (...args: Parameters<AISignalsService['trainAllModels']>) => {
-    const instance = getAISignalsService();
-    return instance.trainAllModels(...args);
-  }
+    return getAISignalsService().trainAllModels(...args);
+  },
 };

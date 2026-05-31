@@ -123,6 +123,8 @@ export async function GET(request: NextRequest) {
           volume24h: parseFloat(data.volume),
           marketCap,
           lastUpdate: new Date(),
+        }, {
+          headers: { 'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=10' },
         });
       }
 
@@ -158,7 +160,26 @@ export async function GET(request: NextRequest) {
           volume: parseFloat(candle[5]),
         }));
 
-        return NextResponse.json(candles);
+        return NextResponse.json(candles, {
+          headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120' },
+        });
+      }
+
+      case 'funding': {
+        const binanceSymbol = symbolMap[symbol] || `${symbol}USDT`;
+        try {
+          const response = await axios.get('https://fapi.binance.com/fapi/v1/fundingRate', {
+            params: { symbol: binanceSymbol, limit: 1 },
+            timeout: 5000,
+          });
+          return NextResponse.json(response.data[0] || null);
+        } catch (error: any) {
+          console.error('Binance funding rate API error:', error.message);
+          return NextResponse.json(
+            { error: `Failed to fetch funding rate for ${symbol}` },
+            { status: 503 }
+          );
+        }
       }
 
       case 'orderbook': {

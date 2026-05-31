@@ -3,7 +3,6 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useState, useEffect } from 'react';
-import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
 import { portfolioService, PortfolioSummary, Trade, PortfolioAsset } from '@/services/portfolio.service';
 import { marketService } from '@/services/market.service';
@@ -21,14 +20,6 @@ import {
 import toast from 'react-hot-toast';
 
 export default function PortfolioPage() {
-  return (
-    <ProtectedRoute requirePro>
-      <PortfolioContent />
-    </ProtectedRoute>
-  );
-}
-
-function PortfolioContent() {
   const { user } = useAuth();
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -174,7 +165,7 @@ function PortfolioContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <>
       {/* Header */}
       <div className="bg-surface border-b border-gray-800">
         <div className="container mx-auto px-4 py-6">
@@ -566,6 +557,6 @@ function PortfolioContent() {
           )}
         </div>
       </div>
-    </div>
+    </>
   );
 }

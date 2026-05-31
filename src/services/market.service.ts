@@ -1,5 +1,6 @@
 import axios from 'axios';
 import CryptoJS from 'crypto-js';
+import { TechnicalIndicators } from './ai/indicators';
 
 // Types
 export interface MarketPrice {
@@ -19,6 +20,13 @@ export interface CandleData {
   low: number;
   close: number;
   volume: number;
+}
+
+export interface FundingRateData {
+  symbol: string;
+  fundingRate: number;
+  fundingTime: number;
+  markPrice: number;
 }
 
 export interface OrderBookData {
@@ -154,6 +162,26 @@ class MarketService {
     }
   }
 
+  // Get funding rate for a futures symbol
+  async getFundingRate(symbol: string): Promise<FundingRateData | null> {
+    try {
+      const response = await axios.get('/api/market', {
+        params: { symbol, action: 'funding' },
+      });
+      const data = response.data;
+      if (!data) return null;
+      return {
+        symbol,
+        fundingRate: parseFloat(data.fundingRate),
+        fundingTime: data.fundingTime,
+        markPrice: parseFloat(data.markPrice),
+      };
+    } catch (error) {
+      console.error('Error fetching funding rate:', error);
+      return null;
+    }
+  }
+
   // Get account balance (requires authentication)
   async getAccountBalance(): Promise<any> {
     try {
@@ -179,71 +207,30 @@ class MarketService {
   }
 
   // Calculate technical indicators for signal generation
+  // Uses the shared TechnicalIndicators class for consistent, correct calculations
   calculateTechnicalIndicators(candles: CandleData[]): {
     sma20: number;
     sma50: number;
     rsi: number;
     macd: { value: number; signal: number; histogram: number };
   } {
-    // Simple Moving Averages
     const closePrices = candles.map(c => c.close);
-    const sma20 = this.calculateSMA(closePrices.slice(-20));
-    const sma50 = this.calculateSMA(closePrices.slice(-50));
 
-    // RSI
-    const rsi = this.calculateRSI(closePrices.slice(-14));
+    // Use proper EMA calculations from TechnicalIndicators
+    const ema20arr = TechnicalIndicators.calculateEMA(closePrices, 20);
+    const ema50arr = TechnicalIndicators.calculateEMA(closePrices, 50);
+    const sma20 = ema20arr.length > 0 ? ema20arr[ema20arr.length - 1] : closePrices[closePrices.length - 1];
+    const sma50 = ema50arr.length > 0 ? ema50arr[ema50arr.length - 1] : closePrices[closePrices.length - 1];
 
-    // MACD
-    const macd = this.calculateMACD(closePrices);
+    const rsi = TechnicalIndicators.calculateRSI(closePrices);
+    const macdResult = TechnicalIndicators.calculateMACD(closePrices);
 
-    return { sma20, sma50, rsi, macd };
-  }
-
-  private calculateSMA(prices: number[]): number {
-    return prices.reduce((sum, price) => sum + price, 0) / prices.length;
-  }
-
-  private calculateRSI(prices: number[]): number {
-    let gains = 0;
-    let losses = 0;
-
-    for (let i = 1; i < prices.length; i++) {
-      const difference = prices[i] - prices[i - 1];
-      if (difference > 0) {
-        gains += difference;
-      } else {
-        losses += Math.abs(difference);
-      }
-    }
-
-    const avgGain = gains / prices.length;
-    const avgLoss = losses / prices.length;
-    const rs = avgGain / avgLoss;
-    const rsi = 100 - (100 / (1 + rs));
-
-    return rsi;
-  }
-
-  private calculateMACD(prices: number[]): { value: number; signal: number; histogram: number } {
-    // Simplified MACD calculation
-    const ema12 = this.calculateEMA(prices, 12);
-    const ema26 = this.calculateEMA(prices, 26);
-    const macdValue = ema12 - ema26;
-    const signal = this.calculateEMA([macdValue], 9);
-    const histogram = macdValue - signal;
-
-    return { value: macdValue, signal, histogram };
-  }
-
-  private calculateEMA(prices: number[], period: number): number {
-    const k = 2 / (period + 1);
-    let ema = prices[0];
-
-    for (let i = 1; i < prices.length; i++) {
-      ema = prices[i] * k + ema * (1 - k);
-    }
-
-    return ema;
+    return {
+      sma20,
+      sma50,
+      rsi,
+      macd: { value: macdResult.macd, signal: macdResult.signal, histogram: macdResult.histogram },
+    };
   }
 
   // Generate basic trading signal (enhanced with AI when available)

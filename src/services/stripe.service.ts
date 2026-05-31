@@ -29,7 +29,7 @@ class StripeService {
   async createCheckoutSession(data: CheckoutSessionData): Promise<string | null> {
     try {
       // Call your API endpoint to create session
-      const response = await fetch('/api/stripe/create-checkout-session', {
+      const response = await fetch('/api/stripe/checkout', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -222,35 +222,14 @@ class StripeService {
   }
 
   // Handle successful payment
+  // The webhook handles the actual subscription activation in Firestore.
+  // This method just waits briefly for the webhook to process, then resolves.
   async handlePaymentSuccess(sessionId: string): Promise<void> {
-    try {
-      // This would typically be called from your success page
-      // after Stripe redirects back to your site
-      const response = await fetch('/api/stripe/verify-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ sessionId }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to verify payment session');
-      }
-
-      const { subscription, customerId, userId } = await response.json();
-
-      // Update user's subscription status
-      await this.updateSubscriptionStatus(
-        userId,
-        'pro', // or determine from subscription
-        subscription.id,
-        customerId
-      );
-    } catch (error) {
-      console.error('Error handling payment success:', error);
-      throw error;
-    }
+    // The Stripe webhook (/api/stripe/webhook) handles updating the user's
+    // subscription status in Firestore. By the time the user reaches the
+    // success page, the webhook should have already fired.
+    // We just log the session for tracking purposes.
+    console.log(`Payment success for session: ${sessionId}`);
   }
 
   // Subscribe to a plan

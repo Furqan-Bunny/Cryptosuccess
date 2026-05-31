@@ -172,13 +172,26 @@ class AuthService {
   }
 
   // Get user profile from Firestore
-  async getUserProfile(uid: string): Promise<UserProfile | null> {
+  // Retries on permission-denied: immediately after sign-in the auth token can
+  // lag behind the Firestore read, surfacing as "Missing or insufficient
+  // permissions" even though the user owns the document.
+  async getUserProfile(uid: string, retries = 2): Promise<UserProfile | null> {
     const docRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(docRef);
 
-    if (docSnap.exists()) {
-      return docSnap.data() as UserProfile;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const docSnap = await getDoc(docRef);
+        return docSnap.exists() ? (docSnap.data() as UserProfile) : null;
+      } catch (error) {
+        const code = (error as { code?: string })?.code;
+        if (code === 'permission-denied' && attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+          continue;
+        }
+        throw error;
+      }
     }
+
     return null;
   }
 

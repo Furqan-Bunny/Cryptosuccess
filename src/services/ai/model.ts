@@ -3,22 +3,42 @@ export class CryptoPredictionModel {
   private isTraining = false;
   private tf: any = null;
 
-  constructor() {
-    // Don't initialize immediately - wait for browser
-  }
+  static readonly TIMESTEPS = 24;
+  static readonly FEATURES = 12;
 
   private async ensureTensorFlow() {
-    // Only import TensorFlow in browser environment
     if (typeof window === 'undefined') {
       throw new Error('TensorFlow.js requires browser environment');
     }
 
     if (!this.tf) {
       try {
-        this.tf = await import('@tensorflow/tfjs');
-        // Wait for TensorFlow to be ready
-        await this.tf.ready();
+        const tf = await import('@tensorflow/tfjs');
+        await tf.ready();
+
+        // A backend chunk can fail to load (e.g. served as a static export),
+        // leaving the engine with no active backend. Running an op then throws
+        // deep errors like "Cannot read properties of undefined (reading 'sqrt')"
+        // from layer initializers. Explicitly activate a backend and verify it
+        // before any op runs, so callers fall back instead of crashing.
+        if (!tf.getBackend()) {
+          for (const backend of ['webgl', 'cpu']) {
+            try {
+              if (await tf.setBackend(backend)) break;
+            } catch {
+              // try the next backend
+            }
+          }
+          await tf.ready();
+        }
+
+        if (!tf.getBackend()) {
+          throw new Error('No TensorFlow.js compute backend is available');
+        }
+
+        this.tf = tf;
       } catch (error) {
+        this.tf = null; // allow a retry on the next attempt
         console.error('Failed to initialize TensorFlow.js:', error);
         throw new Error('TensorFlow.js initialization failed. Please refresh the page.');
       }
@@ -28,37 +48,29 @@ export class CryptoPredictionModel {
 
   private async initializeModel() {
     const tf = await this.ensureTensorFlow();
-    // Create a sequential model
-    this.model = tf.sequential({
-      layers: [
-        // Input layer - takes in multiple features
-        tf.layers.dense({
-          inputShape: [10], // 10 features: price, volume, RSI, MACD, etc.
-          units: 128,
-          activation: 'relu',
-        }),
 
-        // Hidden layers
-        tf.layers.dropout({ rate: 0.2 }),
-        tf.layers.dense({
-          units: 64,
-          activation: 'relu',
-        }),
-        tf.layers.dropout({ rate: 0.2 }),
-        tf.layers.dense({
-          units: 32,
-          activation: 'relu',
-        }),
+    this.model = tf.sequential();
 
-        // Output layer - predicts 3 values: buy signal, sell signal, hold signal
-        tf.layers.dense({
-          units: 3,
-          activation: 'softmax',
-        }),
-      ],
-    });
+    // LSTM layer: input [24 timesteps, 12 features]
+    this.model.add(tf.layers.lstm({
+      inputShape: [CryptoPredictionModel.TIMESTEPS, CryptoPredictionModel.FEATURES],
+      units: 32,
+      returnSequences: false,
+    }));
 
-    // Compile the model
+    this.model.add(tf.layers.dropout({ rate: 0.2 }));
+
+    this.model.add(tf.layers.dense({
+      units: 16,
+      activation: 'relu',
+    }));
+
+    // Output: 3 classes (BUY, SELL, HOLD)
+    this.model.add(tf.layers.dense({
+      units: 3,
+      activation: 'softmax',
+    }));
+
     this.model.compile({
       optimizer: tf.train.adam(0.001),
       loss: 'categoricalCrossentropy',
@@ -66,131 +78,113 @@ export class CryptoPredictionModel {
     });
   }
 
-  // Prepare features from market data
-  private prepareFeatures(marketData: any[]): any {
-    const features = marketData.map(data => [
-      data.price / 100000, // Normalize price
-      data.volume / 1000000, // Normalize volume
-      data.priceChange24h / 100, // Normalize 24h change
-      data.rsi / 100, // RSI is already 0-100
-      data.macd.signal / 100,
-      data.macd.histogram / 100,
-      data.bollinger.upper / 100000,
-      data.bollinger.lower / 100000,
-      data.ema50 / 100000,
-      data.ema200 / 100000,
-    ]);
-
-    return this.tf.tensor2d(features);
-  }
-
-  // Train the model with historical data
-  async train(trainingData: any[], labels: number[][]): Promise<void> {
-    await this.ensureTensorFlow();
-
-    if (!this.model) {
-      await this.initializeModel();
-    }
-
-    if (this.isTraining) {
-      throw new Error('Model is already training');
-    }
+  // Train with windowed data: xs shape [numSamples, 24, 12], ys shape [numSamples, 3]
+  async train(
+    windowedFeatures: number[][][],
+    labels: number[][],
+    options?: { epochs?: number; earlyStoppingPatience?: number; validationSplit?: number }
+  ): Promise<{ finalLoss: number; finalAccuracy: number }> {
+    const tf = await this.ensureTensorFlow();
+    if (!this.model) await this.initializeModel();
+    if (this.isTraining) throw new Error('Model is already training');
 
     this.isTraining = true;
-
     try {
-      const xs = this.prepareFeatures(trainingData);
-      const ys = this.tf.tensor2d(labels);
+      const xs = tf.tensor3d(windowedFeatures);
+      const ys = tf.tensor2d(labels);
 
-      // Train the model
-      await this.model!.fit(xs, ys, {
-        epochs: 50,
+      // Early stopping via manual tracking
+      const patience = options?.earlyStoppingPatience ?? 5;
+      let bestValLoss = Infinity;
+      let waitCount = 0;
+
+      const result = await this.model.fit(xs, ys, {
+        epochs: options?.epochs ?? 50,
         batchSize: 32,
-        validationSplit: 0.2,
+        validationSplit: options?.validationSplit ?? 0.2,
+        shuffle: true,
         callbacks: {
           onEpochEnd: (epoch: number, logs: any) => {
-            console.log(`Epoch ${epoch + 1}: loss = ${logs?.loss?.toFixed(4)}, accuracy = ${logs?.acc?.toFixed(4)}`);
+            console.log(`Epoch ${epoch + 1}: loss=${logs?.loss?.toFixed(4)}, acc=${logs?.acc?.toFixed(4)}, val_loss=${logs?.val_loss?.toFixed(4)}`);
+            const valLoss = logs?.val_loss ?? logs?.loss;
+            if (valLoss < bestValLoss - 0.001) {
+              bestValLoss = valLoss;
+              waitCount = 0;
+            } else {
+              waitCount++;
+              if (waitCount >= patience) {
+                this.model.stopTraining = true;
+              }
+            }
           },
         },
       });
 
-      // Clean up tensors
       xs.dispose();
       ys.dispose();
+
+      const history = result.history;
+      return {
+        finalLoss: history.loss[history.loss.length - 1] as number,
+        finalAccuracy: history.acc[history.acc.length - 1] as number,
+      };
     } finally {
       this.isTraining = false;
     }
   }
 
-  // Make predictions
-  async predict(marketData: any): Promise<{
+  // Predict: input is a single window [24][12]
+  async predict(window: number[][]): Promise<{
     action: 'buy' | 'sell' | 'hold';
     confidence: number;
-    signals: {
-      buy: number;
-      sell: number;
-      hold: number;
-    };
+    signals: { buy: number; sell: number; hold: number };
   }> {
-    await this.ensureTensorFlow();
+    const tf = await this.ensureTensorFlow();
+    if (!this.model) await this.initializeModel();
 
-    if (!this.model) {
-      await this.initializeModel();
-    }
-
-    const features = this.prepareFeatures([marketData]);
-    const prediction = this.model.predict(features);
+    const input = tf.tensor3d([window]); // Shape: [1, 24, 12]
+    const prediction = this.model.predict(input);
     const probabilities = await prediction.data();
 
-    features.dispose();
+    input.dispose();
     prediction.dispose();
 
     const [buyProb, sellProb, holdProb] = probabilities;
-
-    // Determine action based on highest probability
     let action: 'buy' | 'sell' | 'hold';
     let confidence: number;
 
     if (buyProb > sellProb && buyProb > holdProb) {
-      action = 'buy';
-      confidence = buyProb;
+      action = 'buy'; confidence = buyProb;
     } else if (sellProb > buyProb && sellProb > holdProb) {
-      action = 'sell';
-      confidence = sellProb;
+      action = 'sell'; confidence = sellProb;
     } else {
-      action = 'hold';
-      confidence = holdProb;
+      action = 'hold'; confidence = holdProb;
     }
 
     return {
       action,
-      confidence: confidence * 100, // Convert to percentage
-      signals: {
-        buy: buyProb * 100,
-        sell: sellProb * 100,
-        hold: holdProb * 100,
-      },
+      confidence: confidence * 100,
+      signals: { buy: buyProb * 100, sell: sellProb * 100, hold: holdProb * 100 },
     };
   }
 
-  // Save model to browser storage
   async save(): Promise<void> {
     await this.ensureTensorFlow();
-
-    if (!this.model) {
-      throw new Error('Model not initialized');
-    }
-    await this.model.save('localstorage://crypto-prediction-model');
+    if (!this.model) throw new Error('Model not initialized');
+    await this.model.save('indexeddb://crypto-prediction-model');
   }
 
-  // Load model from browser storage
   async load(): Promise<void> {
-    await this.ensureTensorFlow();
-
+    const tf = await this.ensureTensorFlow();
     try {
-      this.model = await this.tf.loadLayersModel('localstorage://crypto-prediction-model');
-    } catch (error) {
-      console.log('No saved model found, using new model');
+      this.model = await tf.loadLayersModel('indexeddb://crypto-prediction-model');
+      this.model.compile({
+        optimizer: tf.train.adam(0.001),
+        loss: 'categoricalCrossentropy',
+        metrics: ['accuracy'],
+      });
+    } catch {
+      console.log('No saved model found, initializing new LSTM model');
       await this.initializeModel();
     }
   }

@@ -13,14 +13,19 @@ interface PriceCardProps {
 export default function PriceCard({ price, onClick }: PriceCardProps) {
   const isPositive = price.changePercent24h > 0;
 
-  // Get symbol icon
-  const getSymbolIcon = (symbol: string) => {
-    const icons: { [key: string]: string } = {
-      ETH: '⟠',
-      SOL: '◎',
-      BNB: '⬡',
-    };
-    return icons[symbol] || '₿';
+  const COIN_NAMES: { [key: string]: string } = {
+    BTC: 'Bitcoin', ETH: 'Ethereum', BNB: 'Binance Coin', SOL: 'Solana',
+    ADA: 'Cardano', XRP: 'Ripple', DOGE: 'Dogecoin', DOT: 'Polkadot',
+    MATIC: 'Polygon', SHIB: 'Shiba Inu', TRX: 'TRON', AVAX: 'Avalanche',
+    UNI: 'Uniswap', ATOM: 'Cosmos', LTC: 'Litecoin', LINK: 'Chainlink',
+    BCH: 'Bitcoin Cash', NEAR: 'NEAR Protocol', ALGO: 'Algorand', VET: 'VeChain',
+  };
+
+  const COIN_ICONS: { [key: string]: string } = {
+    BTC: '₿', ETH: '⟠', BNB: '⬡', SOL: '◎', ADA: '₳', XRP: '✕',
+    DOGE: '🐕', DOT: '●', MATIC: '⬡', SHIB: '🐕', TRX: '⟁', AVAX: '🔺',
+    UNI: '🦄', ATOM: '⚛', LTC: 'Ł', LINK: '⬡', BCH: '₿', NEAR: 'Ⓝ',
+    ALGO: '◇', VET: '✓',
   };
 
   return (
@@ -30,13 +35,11 @@ export default function PriceCard({ price, onClick }: PriceCardProps) {
     >
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center space-x-3">
-          <span className="text-3xl">{getSymbolIcon(price.symbol)}</span>
+          <span className="text-3xl">{COIN_ICONS[price.symbol] || '●'}</span>
           <div>
             <h3 className="text-lg font-semibold text-white">{price.symbol}</h3>
             <p className="text-sm text-text-secondary">
-              {price.symbol === 'ETH' && 'Ethereum'}
-              {price.symbol === 'SOL' && 'Solana'}
-              {price.symbol === 'BNB' && 'Binance Coin'}
+              {COIN_NAMES[price.symbol] || price.symbol}
             </p>
           </div>
         </div>
