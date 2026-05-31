@@ -65,11 +65,17 @@ class AuthService {
         await updateProfile(user, { displayName });
       }
 
-      // Send email verification
-      await sendEmailVerification(user);
-
-      // Create user profile in Firestore
+      // Create the Firestore profile FIRST, so a later failure (e.g. a
+      // rate-limited verification email) can never leave an auth account
+      // without its user document.
       await this.createUserProfile(user);
+
+      // Email verification is best-effort — a failure here must not abort signup.
+      try {
+        await sendEmailVerification(user);
+      } catch (verifyError) {
+        console.warn('[AuthService] Could not send verification email:', verifyError);
+      }
 
       return user;
     } catch (error) {
@@ -168,7 +174,23 @@ class AuthService {
       userProfile.photoURL = user.photoURL;
     }
 
-    await setDoc(doc(db, 'users', user.uid), userProfile);
+    // Right after account creation the auth token can briefly lag the write,
+    // surfacing as permission-denied — retry a couple of times before failing.
+    const userRef = doc(db, 'users', user.uid);
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        await setDoc(userRef, userProfile);
+        return;
+      } catch (error) {
+        const code = (error as { code?: string })?.code;
+        if (code === 'permission-denied' && attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+          continue;
+        }
+        console.error('[AuthService] Failed to create user profile:', error);
+        throw error;
+      }
+    }
   }
 
   // Get user profile from Firestore
