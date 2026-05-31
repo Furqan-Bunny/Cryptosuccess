@@ -3,8 +3,26 @@ import axios from 'axios';
 
 export const dynamic = 'force-dynamic';
 
-const BINANCE_API_URL = 'https://api.binance.com/api/v3';
+// data-api.binance.vision is Binance's public market-data domain. Unlike
+// api.binance.com it is reachable from cloud / US datacenter IPs (e.g. Vercel
+// serverless regions), which otherwise receive HTTP 451 (restricted location).
+const BINANCE_HOSTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+];
 const COINGECKO_API_URL = 'https://api.coingecko.com/api/v3';
+
+async function binanceGet(path: string, params?: Record<string, string | number>) {
+  let lastError: unknown;
+  for (const host of BINANCE_HOSTS) {
+    try {
+      return await axios.get(`${host}${path}`, { params, timeout: 8000 });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 
 const symbolMap: { [key: string]: string } = {
   'ETH': 'ETHUSDT',
@@ -72,10 +90,7 @@ export async function GET(request: NextRequest) {
         // Get price from Binance
         let priceResponse;
         try {
-          priceResponse = await axios.get(`${BINANCE_API_URL}/ticker/24hr`, {
-            params: { symbol: binanceSymbol },
-            timeout: 5000,
-          });
+          priceResponse = await binanceGet('/api/v3/ticker/24hr', { symbol: binanceSymbol });
         } catch (error: any) {
           console.error('Binance API error:', error.message);
           return NextResponse.json(
@@ -135,13 +150,10 @@ export async function GET(request: NextRequest) {
 
         let response;
         try {
-          response = await axios.get(`${BINANCE_API_URL}/klines`, {
-            params: {
-              symbol: binanceSymbol,
-              interval,
-              limit,
-            },
-            timeout: 5000,
+          response = await binanceGet('/api/v3/klines', {
+            symbol: binanceSymbol,
+            interval,
+            limit,
           });
         } catch (error: any) {
           console.error('Binance klines API error:', error.message);
@@ -188,12 +200,9 @@ export async function GET(request: NextRequest) {
 
         let response;
         try {
-          response = await axios.get(`${BINANCE_API_URL}/depth`, {
-            params: {
-              symbol: binanceSymbol,
-              limit,
-            },
-            timeout: 5000,
+          response = await binanceGet('/api/v3/depth', {
+            symbol: binanceSymbol,
+            limit,
           });
         } catch (error: any) {
           console.error('Binance depth API error:', error.message);
