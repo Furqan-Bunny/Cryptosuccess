@@ -38,30 +38,23 @@ export const onUserCreated = functions.auth.user().onCreate(async (user) => {
   }
 });
 
-// Delete user data when account is deleted
+// Soft delete - anonymize user data when account is deleted (GDPR compliance)
 export const onUserDeleted = functions.auth.user().onDelete(async (user) => {
   const { uid } = user;
 
   try {
-    // Delete user profile
-    await db.collection('users').doc(uid).delete();
-
-    // Delete user's signals
-    const signalsSnapshot = await db
-      .collection('signals')
-      .where('userId', '==', uid)
-      .get();
-
-    const batch = db.batch();
-    signalsSnapshot.forEach((doc) => {
-      batch.delete(doc.ref);
+    // Soft delete - mark user data as deleted but keep for compliance
+    await db.collection('users').doc(uid).update({
+      deleted: true,
+      deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+      email: `deleted_${uid}@deleted.com`, // Anonymize email
+      displayName: 'Deleted User',
+      photoURL: null,
     });
 
-    await batch.commit();
-
-    console.log(`Deleted data for user: ${uid}`);
+    console.log(`User data anonymized for ${uid}`);
   } catch (error) {
-    console.error('Error deleting user data:', error);
+    console.error('Error handling user deletion:', error);
   }
 });
 

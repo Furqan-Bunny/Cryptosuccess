@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { marketService, MarketPrice, CandleData, TradeSignal } from '@/services/market.service';
 import { websocketService, PriceUpdate } from '@/services/websocket.service';
+import { useMarketStore } from '@/stores/market.store';
 import toast from 'react-hot-toast';
 
 interface UseMarketDataOptions {
@@ -36,35 +37,28 @@ export function useMarketData(options: UseMarketDataOptions = {}) {
 
   const isFetchingRef = useRef(false);
   const hasInitializedRef = useRef(false);
+  const { setPrices, updatePrice } = useMarketStore();
 
-  // Fetch initial market data
+  // Fetch initial market data — single batch call instead of N individual calls
   const fetchMarketData = useCallback(async () => {
-    if (isFetchingRef.current) return; // Prevent concurrent fetches
+    if (isFetchingRef.current) return;
 
     try {
       isFetchingRef.current = true;
       setData(prev => ({ ...prev, loading: true, error: null }));
 
-      // Fetch prices for all symbols in parallel
-      const pricePromises = symbols.map(async (symbol) => {
-        try {
-          const price = await marketService.getCurrentPrice(symbol);
-          return { symbol, price };
-        } catch (error) {
-          console.error(`Error fetching price for ${symbol}:`, error);
-          return { symbol, price: null };
-        }
-      });
+      // Single API call for all prices
+      const allPrices = await marketService.getAllPrices();
 
-      const priceResults = await Promise.all(pricePromises);
-
-      // Update prices
       const newPrices: { [symbol: string]: MarketPrice } = {};
-      priceResults.forEach(({ symbol, price }) => {
-        if (price) {
-          newPrices[symbol] = price;
+      allPrices.forEach(p => {
+        if (symbols.includes(p.symbol)) {
+          newPrices[p.symbol] = p;
         }
       });
+
+      // Sync to Zustand store
+      setPrices(allPrices);
 
       setData(prev => ({
         ...prev,
@@ -83,7 +77,7 @@ export function useMarketData(options: UseMarketDataOptions = {}) {
       isFetchingRef.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Remove symbols dependency to prevent recreation
+  }, []); // Stable reference
 
   // Fetch candle data for a specific symbol
   const fetchCandleData = useCallback(async (symbol: string) => {
@@ -134,6 +128,9 @@ export function useMarketData(options: UseMarketDataOptions = {}) {
 
   // Handle real-time price updates
   const handlePriceUpdate = useCallback((update: PriceUpdate) => {
+    // Sync to Zustand store
+    updatePrice(update.symbol, { price: update.price, lastUpdate: new Date(update.timestamp) } as Partial<MarketPrice>);
+
     setData(prev => {
       const currentPrice = prev.prices[update.symbol];
       if (!currentPrice) return prev;
@@ -150,6 +147,7 @@ export function useMarketData(options: UseMarketDataOptions = {}) {
         },
       };
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Initial data fetch

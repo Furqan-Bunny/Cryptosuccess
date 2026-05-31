@@ -3,7 +3,6 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
@@ -11,16 +10,10 @@ import { marketService, TradeSignal } from '@/services/market.service';
 import { FaSignal, FaLock, FaChartLine, FaCrown, FaExclamationTriangle } from 'react-icons/fa';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import SignalHistory from '@/components/signals/SignalHistory';
+import { signalHistoryService } from '@/services/signal-history.service';
 
 export default function SignalsPage() {
-  return (
-    <ProtectedRoute>
-      <SignalsContent />
-    </ProtectedRoute>
-  );
-}
-
-function SignalsContent() {
   const { user, profile } = useAuth();
   const [signalLimit, setSignalLimit] = useState<{ allowed: boolean; remaining: number }>({
     allowed: true,
@@ -78,6 +71,24 @@ function SignalsContent() {
       // Add to generated signals
       setGeneratedSignals(prev => [signal, ...prev.filter(s => s.symbol !== symbol)]);
 
+      // Store signal in history
+      if (user) {
+        try {
+          await signalHistoryService.storeSignal({
+            userId: user.uid,
+            symbol: signal.symbol,
+            action: signal.action,
+            confidence: signal.confidence,
+            entryPrice: signal.price,
+            targetPrice: signal.targetPrice,
+            stopLoss: signal.stopLoss,
+            reasoning: signal.reasoning,
+          });
+        } catch (err) {
+          console.error('Error storing signal:', err);
+        }
+      }
+
       // Show success toast
       toast.success(`${signal.action} signal generated for ${symbol}`, {
         icon: signal.action === 'BUY' ? '📈' : signal.action === 'SELL' ? '📉' : '⏸️',
@@ -111,7 +122,7 @@ function SignalsContent() {
   const isProUser = profile?.subscription?.status === 'pro';
 
   return (
-    <div className="min-h-screen bg-background">
+    <>
       {/* Header */}
       <div className="bg-surface border-b border-gray-800">
         <div className="container mx-auto px-4 py-6">
@@ -381,6 +392,9 @@ function SignalsContent() {
           </div>
         )}
 
+        {/* Signal History */}
+        {user && <SignalHistory userId={user.uid} />}
+
         {/* Features Info */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="card p-6 text-center">
@@ -412,6 +426,6 @@ function SignalsContent() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

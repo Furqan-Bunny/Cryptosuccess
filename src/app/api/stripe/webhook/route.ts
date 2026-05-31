@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { headers } from 'next/headers';
+import { getAdminDb } from '@/lib/firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -44,20 +46,77 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const db = getAdminDb();
+
     // Handle the event
     switch (event.type) {
-      case 'checkout.session.completed':
-        // Payment successful - update user subscription
-        console.log('Checkout session completed:', event.data.object);
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const userId = session.metadata?.userId || session.client_reference_id;
+
+        if (userId) {
+          await db.collection('users').doc(userId).update({
+            'subscription.status': 'pro',
+            'subscription.customerId': session.customer as string,
+            'subscription.planId': session.subscription as string,
+            'subscription.currentPeriodEnd': null, // Will be set by subscription.updated
+            'subscription.signalsUsedToday': 0,
+            'subscription.lastResetDate': FieldValue.serverTimestamp(),
+          });
+          console.log(`Subscription activated for user: ${userId}`);
+        } else {
+          console.error('No userId found in checkout session metadata');
+        }
         break;
-      case 'customer.subscription.updated':
-        // Subscription updated
-        console.log('Subscription updated:', event.data.object);
+      }
+
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object as Stripe.Subscription;
+        const userId = subscription.metadata?.userId;
+
+        if (userId) {
+          const status = subscription.status === 'active' ? 'pro' : 'free';
+          await db.collection('users').doc(userId).update({
+            'subscription.status': status,
+            'subscription.currentPeriodEnd': new Date((subscription as any).current_period_end * 1000),
+          });
+          console.log(`Subscription updated for user: ${userId}, status: ${status}`);
+        }
         break;
-      case 'customer.subscription.deleted':
-        // Subscription cancelled
-        console.log('Subscription cancelled:', event.data.object);
+      }
+
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object as Stripe.Subscription;
+        const userId = subscription.metadata?.userId;
+
+        if (userId) {
+          await db.collection('users').doc(userId).update({
+            'subscription.status': 'free',
+            'subscription.planId': null,
+            'subscription.currentPeriodEnd': null,
+          });
+          console.log(`Subscription cancelled for user: ${userId}`);
+        }
         break;
+      }
+
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as Stripe.Invoice;
+        const customerId = invoice.customer as string;
+
+        // Find user by customerId and warn them
+        const usersSnapshot = await db.collection('users')
+          .where('subscription.customerId', '==', customerId)
+          .limit(1)
+          .get();
+
+        if (!usersSnapshot.empty) {
+          const userDoc = usersSnapshot.docs[0];
+          console.log(`Payment failed for user: ${userDoc.id}, customer: ${customerId}`);
+        }
+        break;
+      }
+
       default:
         console.log(`Unhandled event type: ${event.type}`);
     }

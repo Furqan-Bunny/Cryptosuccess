@@ -86,7 +86,9 @@ export async function GET(request: NextRequest) {
     // Sort by market cap
     result.sort((a, b) => b.marketCap - a.marketCap);
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { 'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=10' },
+    });
   } catch (error) {
     console.error('Market API error:', error);
     return NextResponse.json(

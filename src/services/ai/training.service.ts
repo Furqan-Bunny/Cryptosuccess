@@ -9,138 +9,133 @@ export class AITrainingService {
     this.model = new CryptoPredictionModel();
   }
 
-  // Fetch and prepare training data
+  // Prepare training data with sliding windows and ATR-based labeling
   async prepareTrainingData(symbol: string, days = 30): Promise<{
-    features: any[];
+    windows: number[][][];
     labels: number[][];
   }> {
-    // Get historical candles
     const candles = await marketService.getCandleData(symbol, '1h', days * 24);
 
-    if (candles.length < 50) {
+    if (candles.length < 100) {
       throw new Error('Insufficient historical data for training');
     }
 
-    const features: any[] = [];
-    const labels: number[][] = [];
+    const LOOKBACK = 50; // minimum candles needed for indicators
+    const TIMESTEPS = CryptoPredictionModel.TIMESTEPS;
+    const LOOKAHEAD = 24; // evaluate 24 hours later
 
-    // Create training samples with look-ahead labels
-    for (let i = 50; i < candles.length - 24; i++) {
-      const historicalCandles = candles.slice(i - 50, i);
-      const currentPrice = candles[i].close;
-      const futurePrice = candles[i + 24].close; // 24 hours later
-
-      // Calculate indicators
-      const indicators = TechnicalIndicators.prepareIndicators(historicalCandles);
-
-      // Create feature object
-      const feature = {
-        price: currentPrice,
-        volume: candles[i].volume,
-        priceChange24h: ((currentPrice - candles[i - 24].close) / candles[i - 24].close) * 100,
-        ...indicators,
-      };
-
-      features.push(feature);
-
-      // Create labels based on future price movement
-      const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
-
-      // Label encoding: [buy, sell, hold]
-      if (priceChange > 2) {
-        labels.push([1, 0, 0]); // Buy signal
-      } else if (priceChange < -2) {
-        labels.push([0, 1, 0]); // Sell signal
-      } else {
-        labels.push([0, 0, 1]); // Hold signal
-      }
+    // Step 1: Compute normalized feature vector for every candle position
+    const allFeatures: number[][] = [];
+    for (let i = LOOKBACK; i < candles.length; i++) {
+      const slice = candles.slice(Math.max(0, i - LOOKBACK), i + 1);
+      const features = TechnicalIndicators.prepareNormalizedFeatures(slice);
+      allFeatures.push(features);
     }
 
-    return { features, labels };
+    // Step 2: Create sliding windows of TIMESTEPS and ATR-based labels
+    const windows: number[][][] = [];
+    const labels: number[][] = [];
+
+    for (let i = TIMESTEPS; i < allFeatures.length - LOOKAHEAD; i++) {
+      const window = allFeatures.slice(i - TIMESTEPS, i);
+
+      // Map back to candle index for price comparison
+      const candleIdx = i + LOOKBACK;
+      const currentPrice = candles[candleIdx].close;
+      const futurePrice = candles[candleIdx + LOOKAHEAD].close;
+      const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
+
+      // ATR-based labeling threshold
+      const sliceForATR = candles.slice(Math.max(0, candleIdx - 50), candleIdx + 1);
+      const atrPercent = TechnicalIndicators.calculateATRPercent(
+        sliceForATR.map(c => c.high),
+        sliceForATR.map(c => c.low),
+        sliceForATR.map(c => c.close)
+      );
+      const threshold = Math.max(atrPercent, 1); // minimum 1%
+
+      if (priceChange > threshold) {
+        labels.push([1, 0, 0]); // BUY
+      } else if (priceChange < -threshold) {
+        labels.push([0, 1, 0]); // SELL
+      } else {
+        labels.push([0, 0, 1]); // HOLD
+      }
+
+      windows.push(window);
+    }
+
+    return { windows, labels };
   }
 
-  // Train model for a specific symbol
   async trainModel(symbol: string): Promise<void> {
-    console.log(`Training AI model for ${symbol}...`);
+    console.log(`Training LSTM model for ${symbol}...`);
 
     try {
-      // Load existing model if available
       await this.model.load();
+      const { windows, labels } = await this.prepareTrainingData(symbol, 60);
 
-      // Prepare training data
-      const { features, labels } = await this.prepareTrainingData(symbol, 60);
+      if (windows.length < 50) {
+        throw new Error(`Only ${windows.length} training samples — need at least 50`);
+      }
 
-      // Train the model
-      await this.model.train(features, labels);
+      const result = await this.model.train(windows, labels, {
+        epochs: 50,
+        earlyStoppingPatience: 5,
+        validationSplit: 0.2,
+      });
 
-      // Save the trained model
+      console.log(`Training complete: loss=${result.finalLoss.toFixed(4)}, acc=${result.finalAccuracy.toFixed(4)}`);
       await this.model.save();
-
-      console.log(`Model training completed for ${symbol}`);
     } catch (error) {
       console.error(`Error training model for ${symbol}:`, error);
       throw error;
     }
   }
 
-  // Generate prediction for current market conditions
   async generatePrediction(symbol: string): Promise<{
     symbol: string;
     action: 'buy' | 'sell' | 'hold';
     confidence: number;
-    signals: {
-      buy: number;
-      sell: number;
-      hold: number;
-    };
+    signals: { buy: number; sell: number; hold: number };
     indicators: any;
     timestamp: Date;
   }> {
-    try {
-      // Ensure we're in a browser environment
-      if (typeof window === 'undefined') {
-        throw new Error('AI prediction requires browser environment');
-      }
-
-      // Load the model
-      await this.model.load();
-
-      // Get recent candles
-      const candles = await marketService.getCandleData(symbol, '1h', 100);
-      const indicators = TechnicalIndicators.prepareIndicators(candles.slice(-50));
-
-      // Get current price data
-      const currentPrice = await marketService.getCurrentPrice(symbol);
-
-      // Prepare current market data
-      const marketData = {
-        price: currentPrice.price,
-        volume: currentPrice.volume24h,
-        priceChange24h: currentPrice.changePercent24h,
-        ...indicators,
-      };
-
-      // Generate prediction
-      const prediction = await this.model.predict(marketData);
-
-      return {
-        symbol,
-        ...prediction,
-        indicators,
-        timestamp: new Date(),
-      };
-    } catch (error) {
-      console.error(`Error generating prediction for ${symbol}:`, error);
-      throw error;
+    if (typeof window === 'undefined') {
+      throw new Error('AI prediction requires browser environment');
     }
+
+    await this.model.load();
+
+    // Get enough candles for indicators (50 lookback) + 24 timestep window
+    const candles = await marketService.getCandleData(symbol, '1h', 100);
+    const LOOKBACK = 50;
+    const TIMESTEPS = CryptoPredictionModel.TIMESTEPS;
+
+    // Build feature vectors for the last TIMESTEPS candle positions
+    const featureVectors: number[][] = [];
+    for (let i = candles.length - TIMESTEPS; i < candles.length; i++) {
+      const slice = candles.slice(Math.max(0, i - LOOKBACK), i + 1);
+      featureVectors.push(TechnicalIndicators.prepareNormalizedFeatures(slice));
+    }
+
+    const prediction = await this.model.predict(featureVectors);
+
+    // Also return traditional indicators for reasoning
+    const indicators = TechnicalIndicators.prepareIndicators(candles.slice(-50));
+
+    return {
+      symbol,
+      ...prediction,
+      indicators,
+      timestamp: new Date(),
+    };
   }
 
-  // Batch train models for multiple symbols
   async trainAllModels(symbols: string[]): Promise<void> {
     for (const symbol of symbols) {
       try {
         await this.trainModel(symbol);
-        // Add delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 5000));
       } catch (error) {
         console.error(`Failed to train model for ${symbol}:`, error);
