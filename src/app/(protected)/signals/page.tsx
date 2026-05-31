@@ -2,124 +2,125 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
+import toast from 'react-hot-toast';
+import { doc, updateDoc } from 'firebase/firestore';
+import { db } from '@/services/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
-import { marketService, TradeSignal } from '@/services/market.service';
-import { FaSignal, FaLock, FaChartLine, FaCrown, FaExclamationTriangle } from 'react-icons/fa';
-import Link from 'next/link';
-import toast from 'react-hot-toast';
-import SignalHistory from '@/components/signals/SignalHistory';
+import { marketService } from '@/services/market.service';
+import { buildSignalReport, SignalReportData } from '@/services/signal-report.service';
 import { signalHistoryService } from '@/services/signal-history.service';
+import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
+import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar } from 'react-icons/fa';
+
+import SignalReport from '@/components/signals/SignalReport';
+import SignalHistory from '@/components/signals/SignalHistory';
+import SentimentGauge from '@/components/market/SentimentGauge';
 
 export default function SignalsPage() {
-  const { user, profile } = useAuth();
-  const [signalLimit, setSignalLimit] = useState<{ allowed: boolean; remaining: number }>({
-    allowed: true,
-    remaining: 5,
-  });
-  const [generatedSignals, setGeneratedSignals] = useState<TradeSignal[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>('ETH');
-  const [loading, setLoading] = useState(false);
+  const { user, profile, refreshProfile } = useAuth();
+  const [signalLimit, setSignalLimit] = useState<{ allowed: boolean; remaining: number }>({ allowed: true, remaining: 5 });
+  const [reports, setReports] = useState<SignalReportData[]>([]);
+  const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addQuery, setAddQuery] = useState('');
 
-  const { prices, candles, fetchCandleData } = useMarketData({
-    symbols: ['ETH', 'SOL', 'BNB'],
-    enableRealtime: true,
-  });
+  const isPro = profile?.subscription?.status === 'pro';
+  const maxWatchlist = isPro ? 50 : 5;
 
-  // Check signal limit on mount and profile change
+  const watchlist = useMemo(
+    () => (profile?.preferences?.watchlist || []).filter(isSupportedCoin),
+    [profile]
+  );
+
+  const { prices } = useMarketData({ symbols: watchlist, enableRealtime: true });
+
   useEffect(() => {
-    if (user) {
-      checkSignalLimit();
-    }
+    if (user) checkSignalLimit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, profile]);
 
   const checkSignalLimit = async () => {
     if (!user) return;
-
     try {
-      const limit = await authService.checkSignalLimit(user.uid);
-      setSignalLimit(limit);
-    } catch (error) {
-      console.error('Error checking signal limit:', error);
+      setSignalLimit(await authService.checkSignalLimit(user.uid));
+    } catch (e) {
+      console.error('Error checking signal limit:', e);
     }
   };
 
-  const generateSignal = async (symbol: string) => {
-    if (!signalLimit.allowed && profile?.subscription?.status === 'free') {
+  const generate = async (symbol: string) => {
+    if (!isPro && !signalLimit.allowed) {
       toast.error('Daily signal limit reached. Upgrade to Pro for unlimited signals!');
       return;
     }
-
-    setLoading(true);
+    setLoadingSymbol(symbol);
     try {
-      // Ensure we have candle data
-      if (!candles[symbol]) {
-        await fetchCandleData(symbol);
-      }
+      const report = await buildSignalReport(symbol);
 
-      // Generate the signal
-      const signal = await marketService.generateSignal(symbol);
-
-      // Update signal usage for free users
-      if (user && profile?.subscription?.status === 'free') {
+      if (user && !isPro) {
         await authService.incrementSignalUsage(user.uid);
-        await checkSignalLimit(); // Refresh the limit
+        await checkSignalLimit();
       }
 
-      // Add to generated signals
-      setGeneratedSignals(prev => [signal, ...prev.filter(s => s.symbol !== symbol)]);
+      setReports(prev => [report, ...prev.filter(r => r.signal.symbol !== symbol)]);
 
-      // Store signal in history
       if (user) {
         try {
           await signalHistoryService.storeSignal({
             userId: user.uid,
-            symbol: signal.symbol,
-            action: signal.action,
-            confidence: signal.confidence,
-            entryPrice: signal.price,
-            targetPrice: signal.targetPrice,
-            stopLoss: signal.stopLoss,
-            reasoning: signal.reasoning,
+            symbol: report.signal.symbol,
+            action: report.signal.action,
+            confidence: report.signal.confidence,
+            entryPrice: report.signal.price,
+            targetPrice: report.signal.targetPrice,
+            stopLoss: report.signal.stopLoss,
+            reasoning: report.signal.reasoning,
           });
-        } catch (err) {
-          console.error('Error storing signal:', err);
+        } catch (e) {
+          console.error('Error storing signal:', e);
         }
       }
 
-      // Show success toast
-      toast.success(`${signal.action} signal generated for ${symbol}`, {
-        icon: signal.action === 'BUY' ? '📈' : signal.action === 'SELL' ? '📉' : '⏸️',
+      toast.success(`${report.signal.action} signal generated for ${symbol}`, {
+        icon: report.signal.action === 'BUY' ? '📈' : report.signal.action === 'SELL' ? '📉' : '⏸️',
       });
-
-    } catch (error) {
-      console.error('Error generating signal:', error);
+    } catch (e) {
+      console.error('Error generating signal:', e);
       toast.error('Failed to generate signal. Please try again.');
     } finally {
-      setLoading(false);
+      setLoadingSymbol(null);
     }
   };
 
-  const getSignalColor = (action: string) => {
-    switch (action) {
-      case 'BUY':
-        return 'text-green-400 bg-green-900/20';
-      case 'SELL':
-        return 'text-red-400 bg-red-900/20';
-      default:
-        return 'text-yellow-400 bg-yellow-900/20';
+  const addCoin = async (symbol: string) => {
+    if (watchlist.includes(symbol)) return;
+    if (!isPro && watchlist.length >= maxWatchlist) {
+      toast.error(`Free plan tracks up to ${maxWatchlist} coins. Upgrade to Pro for more.`);
+      return;
+    }
+    try {
+      if (user) {
+        await updateDoc(doc(db, 'users', user.uid), { 'preferences.watchlist': [...watchlist, symbol] });
+        await refreshProfile();
+      }
+      toast.success(`${symbol} added to your watchlist`);
+      setShowAddModal(false);
+      setAddQuery('');
+    } catch (e) {
+      console.error('Error adding coin:', e);
+      toast.error('Failed to add coin');
     }
   };
 
-  const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 80) return 'text-green-400';
-    if (confidence >= 60) return 'text-yellow-400';
-    return 'text-red-400';
-  };
-
-  const isProUser = profile?.subscription?.status === 'pro';
+  const addable = COINS.filter(
+    c => !watchlist.includes(c.symbol) &&
+      (c.symbol.toLowerCase().includes(addQuery.toLowerCase()) ||
+        c.name.toLowerCase().includes(addQuery.toLowerCase()))
+  );
 
   return (
     <>
@@ -128,304 +129,157 @@ export default function SignalsPage() {
         <div className="container mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-3xl font-bold text-white mb-2">
-                AI Trading Signals
-              </h1>
-              <p className="text-text-secondary">
-                Advanced AI-powered trading recommendations
-              </p>
+              <h1 className="text-3xl font-bold text-white mb-2">AI Trading Signals</h1>
+              <p className="text-text-secondary">Detailed, explainable signals for the coins on your watchlist</p>
             </div>
-            {!isProUser && (
+            {!isPro && (
               <div className="text-right">
-                <p className="text-sm text-text-secondary mb-1">
-                  Signals remaining today
-                </p>
-                <p className="text-2xl font-bold text-primary">
-                  {signalLimit.remaining} / 5
-                </p>
+                <p className="text-sm text-text-secondary mb-1">Signals remaining today</p>
+                <p className="text-2xl font-bold text-primary">{signalLimit.remaining} / 5</p>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      <div className="container mx-auto px-4 py-8">
-        {/* Pro Upgrade Banner for Free Users */}
-        {!isProUser && signalLimit.remaining <= 2 && (
-          <div className="bg-primary/10 border border-primary rounded-lg p-6 mb-8">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
-                <FaCrown className="text-4xl text-primary" />
-                <div>
-                  <h3 className="text-xl font-semibold text-white mb-1">
-                    Running low on signals?
-                  </h3>
-                  <p className="text-text-secondary">
-                    Upgrade to Pro for unlimited AI trading signals and advanced features
-                  </p>
-                </div>
+      <div className="container mx-auto px-4 py-8 space-y-8">
+        {/* Upgrade banner */}
+        {!isPro && signalLimit.remaining <= 2 && (
+          <div className="bg-primary/10 border border-primary rounded-lg p-6 flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <FaCrown className="text-4xl text-primary" />
+              <div>
+                <h3 className="text-xl font-semibold text-white mb-1">Running low on signals?</h3>
+                <p className="text-text-secondary">Upgrade to Pro for unlimited AI trading signals and a bigger watchlist.</p>
               </div>
-              <Link
-                href="/pricing"
-                className="btn-primary px-6 py-3"
-              >
-                Upgrade to Pro
-              </Link>
             </div>
+            <Link href="/pricing" className="btn-primary px-6 py-3">Upgrade to Pro</Link>
           </div>
         )}
 
-        {/* Symbol Selection */}
-        <div className="mb-8">
-          <h2 className="text-xl font-semibold text-white mb-4">
-            Select Cryptocurrency
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {['ETH', 'SOL', 'BNB'].map((symbol) => {
-              const price = prices[symbol];
-              const signal = generatedSignals.find(s => s.symbol === symbol);
+        {/* Watchlist + sentiment */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <div className="card p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-white flex items-center">
+                  <FaStar className="mr-2 text-yellow-500" /> Your Watchlist
+                </h2>
+                <button onClick={() => setShowAddModal(true)} className="btn-secondary px-3 py-1 text-sm flex items-center">
+                  <FaPlus className="mr-1" /> Add coins
+                </button>
+              </div>
 
-              return (
-                <div
-                  key={symbol}
-                  className={`card p-6 cursor-pointer transition-all ${
-                    selectedSymbol === symbol
-                      ? 'border-primary ring-2 ring-primary/20'
-                      : 'hover:border-gray-600'
-                  }`}
-                  onClick={() => setSelectedSymbol(symbol)}
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white">
-                        {symbol}
-                      </h3>
-                      <p className="text-sm text-text-secondary">
-                        {symbol === 'ETH' && 'Ethereum'}
-                        {symbol === 'SOL' && 'Solana'}
-                        {symbol === 'BNB' && 'Binance Coin'}
-                      </p>
-                    </div>
-                    {signal && (
-                      <span
-                        className={`px-3 py-1 rounded-full text-sm font-medium ${getSignalColor(
-                          signal.action
-                        )}`}
-                      >
-                        {signal.action}
-                      </span>
-                    )}
-                  </div>
-
-                  {price && (
-                    <div>
-                      <p className="text-2xl font-bold text-white">
-                        {marketService.formatPrice(price.price)}
-                      </p>
-                      <p
-                        className={`text-sm mt-1 ${
-                          price.changePercent24h > 0
-                            ? 'text-green-400'
-                            : 'text-red-400'
-                        }`}
-                      >
-                        {price.changePercent24h > 0 ? '+' : ''}
-                        {price.changePercent24h.toFixed(2)}% (24h)
-                      </p>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      generateSignal(symbol);
-                    }}
-                    disabled={loading || (!signalLimit.allowed && !isProUser)}
-                    className="mt-4 w-full btn-secondary py-2 text-sm"
-                  >
-                    {loading && selectedSymbol === symbol ? (
-                      <span className="flex items-center justify-center">
-                        <span className="animate-spin mr-2">⚡</span>
-                        Analyzing...
-                      </span>
-                    ) : (
-                      'Generate Signal'
-                    )}
-                  </button>
+              {watchlist.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-text-secondary mb-4">Your watchlist is empty. Add coins to generate signals for them.</p>
+                  <button onClick={() => setShowAddModal(true)} className="btn-primary px-4 py-2">Add to Watchlist</button>
                 </div>
-              );
-            })}
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {watchlist.map(symbol => {
+                    const price = prices[symbol];
+                    const busy = loadingSymbol === symbol;
+                    return (
+                      <div key={symbol} className="bg-surface border border-gray-800 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-2xl">{getCoinIcon(symbol)}</span>
+                            <div>
+                              <div className="flex items-center space-x-1">
+                                <span className="font-semibold text-white">{symbol}</span>
+                                {!isAiProfiled(symbol) && <FaFlask className="text-[10px] text-orange-400" title="Experimental" />}
+                              </div>
+                              <p className="text-xs text-text-secondary">{getCoinName(symbol)}</p>
+                            </div>
+                          </div>
+                          {price && (
+                            <div className="text-right">
+                              <p className="text-sm font-medium text-white">{marketService.formatPrice(price.price)}</p>
+                              <p className={`text-xs ${price.changePercent24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {price.changePercent24h >= 0 ? '+' : ''}{price.changePercent24h.toFixed(2)}%
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => generate(symbol)}
+                          disabled={busy || (!isPro && !signalLimit.allowed)}
+                          className="w-full btn-primary py-2 text-sm disabled:opacity-50"
+                        >
+                          {busy ? 'Analyzing…' : 'Generate Signal'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
+
+          <SentimentGauge />
         </div>
 
-        {/* Generated Signals */}
-        {generatedSignals.length > 0 && (
-          <div>
-            <h2 className="text-xl font-semibold text-white mb-4">
-              Generated Signals
-            </h2>
-            <div className="space-y-4">
-              {generatedSignals.map((signal, index) => (
-                <div
-                  key={`${signal.symbol}-${index}`}
-                  className="card p-6"
+        {/* Generated reports */}
+        {reports.length > 0 && (
+          <div className="space-y-8">
+            <h2 className="text-xl font-semibold text-white">Generated Signals</h2>
+            {reports.map(report => (
+              <SignalReport
+                key={report.signal.symbol}
+                report={report}
+                loading={loadingSymbol === report.signal.symbol}
+                onRegenerate={() => generate(report.signal.symbol)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* History */}
+        {user && <SignalHistory userId={user.uid} />}
+      </div>
+
+      {/* Add coins modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowAddModal(false)}>
+          <div className="bg-surface rounded-lg p-6 max-w-md w-full max-h-[75vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-white">Add to Watchlist</h3>
+              <button onClick={() => setShowAddModal(false)} className="text-text-secondary hover:text-white"><FaTimes /></button>
+            </div>
+            <div className="relative mb-4">
+              <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary text-sm" />
+              <input
+                type="text"
+                value={addQuery}
+                onChange={e => setAddQuery(e.target.value)}
+                placeholder="Search coins…"
+                className="w-full pl-9 pr-4 py-2 bg-background border border-gray-700 rounded-lg text-white placeholder-text-secondary focus:border-primary focus:outline-none"
+              />
+            </div>
+            {!isPro && (
+              <p className="text-xs text-text-secondary mb-3">{watchlist.length}/{maxWatchlist} coins · Upgrade to Pro for up to 50</p>
+            )}
+            <div className="space-y-2">
+              {addable.length === 0 && <p className="text-text-secondary text-sm text-center py-4">No coins found.</p>}
+              {addable.map(c => (
+                <button
+                  key={c.symbol}
+                  onClick={() => addCoin(c.symbol)}
+                  className="w-full text-left p-3 bg-background rounded-lg hover:bg-gray-800 transition-colors flex items-center justify-between"
                 >
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                    {/* Signal Info */}
-                    <div className="md:col-span-2">
-                      <div className="flex items-center space-x-4 mb-4">
-                        <div className="text-3xl">
-                          <FaSignal className={getSignalColor(signal.action).split(' ')[0]} />
-                        </div>
-                        <div>
-                          <h3 className="text-xl font-semibold text-white">
-                            {signal.symbol} - {signal.action} Signal
-                          </h3>
-                          <p className="text-text-secondary">
-                            Generated {new Date(signal.timestamp).toLocaleTimeString()}
-                          </p>
-                        </div>
-                      </div>
-                      <p className="text-text-secondary mb-4">
-                        {signal.reasoning}
-                      </p>
-                      <div className="flex items-center space-x-4">
-                        <span className="text-sm text-text-secondary">
-                          Confidence:
-                        </span>
-                        <div className="flex-1 bg-gray-800 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded-full ${
-                              signal.confidence >= 80
-                                ? 'bg-green-500'
-                                : signal.confidence >= 60
-                                ? 'bg-yellow-500'
-                                : 'bg-red-500'
-                            }`}
-                            style={{ width: `${signal.confidence}%` }}
-                          />
-                        </div>
-                        <span
-                          className={`text-sm font-medium ${getConfidenceColor(
-                            signal.confidence
-                          )}`}
-                        >
-                          {signal.confidence}%
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Price Targets */}
-                    <div className="md:col-span-2 grid grid-cols-3 gap-4">
-                      <div>
-                        <p className="text-sm text-text-secondary mb-1">
-                          Entry Price
-                        </p>
-                        <p className="text-lg font-semibold text-white">
-                          {marketService.formatPrice(signal.price)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-text-secondary mb-1">
-                          Target Price
-                        </p>
-                        <p className="text-lg font-semibold text-green-400">
-                          {marketService.formatPrice(signal.targetPrice)}
-                        </p>
-                        <p className="text-xs text-text-secondary">
-                          {(
-                            ((signal.targetPrice - signal.price) / signal.price) *
-                            100
-                          ).toFixed(2)}
-                          %
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-text-secondary mb-1">
-                          Stop Loss
-                        </p>
-                        <p className="text-lg font-semibold text-red-400">
-                          {marketService.formatPrice(signal.stopLoss)}
-                        </p>
-                        <p className="text-xs text-text-secondary">
-                          {(
-                            ((signal.stopLoss - signal.price) / signal.price) *
-                            100
-                          ).toFixed(2)}
-                          %
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Risk Warning */}
-                  <div className="mt-4 pt-4 border-t border-gray-800">
-                    <p className="text-xs text-text-secondary flex items-center">
-                      <FaExclamationTriangle className="mr-2 text-yellow-500" />
-                      This is not financial advice. Always do your own research and manage your risk.
-                    </p>
-                  </div>
-                </div>
+                  <span className="flex items-center space-x-2">
+                    <span className="text-xl">{c.icon}</span>
+                    <span className="text-white font-medium">{c.symbol}</span>
+                    <span className="text-text-secondary text-sm">{c.name}</span>
+                  </span>
+                  <FaPlus className="text-primary" />
+                </button>
               ))}
             </div>
           </div>
-        )}
-
-        {/* No Signals State */}
-        {generatedSignals.length === 0 && (
-          <div className="card p-12 text-center">
-            <FaChartLine className="text-6xl text-primary mb-4 mx-auto" />
-            <h3 className="text-xl font-semibold text-white mb-2">
-              No signals generated yet
-            </h3>
-            <p className="text-text-secondary mb-6">
-              Select a cryptocurrency above and click "Generate Signal" to get AI-powered trading recommendations
-            </p>
-            {!isProUser && signalLimit.remaining === 0 && (
-              <div className="bg-red-900/20 border border-red-800 rounded-lg p-4 mt-4">
-                <p className="text-red-400 flex items-center justify-center">
-                  <FaLock className="mr-2" />
-                  Daily signal limit reached. Upgrade to Pro for unlimited signals.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Signal History */}
-        {user && <SignalHistory userId={user.uid} />}
-
-        {/* Features Info */}
-        <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="card p-6 text-center">
-            <div className="text-3xl text-primary mb-4">🧠</div>
-            <h3 className="text-lg font-semibold text-white mb-2">
-              AI-Powered Analysis
-            </h3>
-            <p className="text-sm text-text-secondary">
-              Advanced machine learning algorithms analyze multiple indicators
-            </p>
-          </div>
-          <div className="card p-6 text-center">
-            <div className="text-3xl text-primary mb-4">📊</div>
-            <h3 className="text-lg font-semibold text-white mb-2">
-              Technical Indicators
-            </h3>
-            <p className="text-sm text-text-secondary">
-              RSI, MACD, Moving Averages, Volume Analysis, and more
-            </p>
-          </div>
-          <div className="card p-6 text-center">
-            <div className="text-3xl text-primary mb-4">⚡</div>
-            <h3 className="text-lg font-semibold text-white mb-2">
-              Real-Time Data
-            </h3>
-            <p className="text-sm text-text-secondary">
-              Signals generated using live market data from Binance
-            </p>
-          </div>
         </div>
-      </div>
+      )}
     </>
   );
 }
