@@ -185,7 +185,7 @@ export default function Watchlist({ onSelectSymbol }: WatchlistProps) {
                 </div>
                 <div className="flex items-center space-x-2">
                   <Link
-                    href={`/signals?symbol=${symbol}`}
+                    href={`/market/${symbol}`}
                     className="text-primary hover:text-primary-light p-2"
                     onClick={(e) => e.stopPropagation()}
                   >
