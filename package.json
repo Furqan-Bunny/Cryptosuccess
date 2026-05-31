@@ -36,6 +36,7 @@
     "firebase": "^10.7.2",
     "firebase-admin": "^13.7.0",
     "framer-motion": "^10.16.5",
+    "lightweight-charts": "^4.2.3",
     "next": "14.0.3",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.2.0",
