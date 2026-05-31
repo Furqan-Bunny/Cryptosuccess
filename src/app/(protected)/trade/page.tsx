@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic';
 
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
+import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useMarketData } from '@/hooks/useMarketData';
 import { tradeExecutionService, Order, ExecutionResult } from '@/services/trade-execution.service';
 import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
@@ -22,6 +23,14 @@ import {
 import toast from 'react-hot-toast';
 
 export default function TradePage() {
+  return (
+    <ProtectedRoute requirePro>
+      <TradePageInner />
+    </ProtectedRoute>
+  );
+}
+
+function TradePageInner() {
   const { user } = useAuth();
   const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop-loss'>('market');
   const [orderSide, setOrderSide] = useState<'buy' | 'sell'>('buy');

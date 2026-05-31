@@ -1,6 +1,4 @@
 import { loadStripe, Stripe } from '@stripe/stripe-js';
-import { db } from './firebase';
-import { doc, updateDoc, collection, addDoc } from 'firebase/firestore';
 
 // Initialize Stripe
 let stripePromise: Promise<Stripe | null>;
@@ -100,84 +98,10 @@ class StripeService {
     }
   }
 
-  // Update user subscription status
-  async updateSubscriptionStatus(
-    userId: string,
-    status: 'free' | 'pro' | 'enterprise',
-    subscriptionId?: string,
-    customerId?: string
-  ): Promise<void> {
-    try {
-      const userRef = doc(db, 'users', userId);
-
-      await updateDoc(userRef, {
-        subscription: {
-          status,
-          subscriptionId: subscriptionId || null,
-          customerId: customerId || null,
-          updatedAt: new Date(),
-        },
-      });
-
-      // Log subscription change
-      await addDoc(collection(db, 'subscription_logs'), {
-        userId,
-        status,
-        subscriptionId,
-        customerId,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      console.error('Error updating subscription status:', error);
-      throw error;
-    }
-  }
-
-  // Cancel subscription
-  async cancelSubscription(subscriptionId: string): Promise<void> {
-    try {
-      const response = await fetch('/api/stripe/cancel-subscription', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ subscriptionId }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to cancel subscription');
-      }
-    } catch (error) {
-      console.error('Error cancelling subscription:', error);
-      throw error;
-    }
-  }
-
-  // Get subscription details
-  async getSubscriptionDetails(subscriptionId: string): Promise<any> {
-    try {
-      const response = await fetch(`/api/stripe/subscription/${subscriptionId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to get subscription details');
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error('Error getting subscription details:', error);
-      throw error;
-    }
-  }
-
   // Create customer portal session
   async createCustomerPortalSession(customerId: string): Promise<string | null> {
     try {
-      const response = await fetch('/api/stripe/create-portal-session', {
+      const response = await fetch('/api/stripe/billing-portal', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -210,17 +134,6 @@ class StripeService {
     }
   }
 
-  // Verify webhook signature (for server-side use)
-  verifyWebhookSignature(
-    payload: string | Buffer,
-    signature: string,
-    secret: string
-  ): any {
-    // This would be implemented on the server side
-    // Using Stripe's webhook verification
-    throw new Error('Webhook verification must be done server-side');
-  }
-
   // Handle successful payment
   // The webhook handles the actual subscription activation in Firestore.
   // This method just waits briefly for the webhook to process, then resolves.
@@ -242,11 +155,6 @@ class StripeService {
       if (!user) {
         throw new Error('User not authenticated');
       }
-
-      // Create test price IDs (in production, these would be real Stripe price IDs)
-      const testPriceId = interval === 'monthly'
-        ? 'price_1QMqb8BEXI6qcoMdJJvZvxqQ' // You'll need to create these in Stripe Dashboard
-        : 'price_1QMqb8BEXI6qcoMdpnE3Vv2j';
 
       await this.createSubscriptionCheckout(
         user.uid,

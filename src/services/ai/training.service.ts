@@ -107,6 +107,12 @@ export class AITrainingService {
 
     await this.model.load();
 
+    // No trained model yet → don't emit random predictions. Throwing here lets
+    // marketService.generateSignal fall back to the rule-based engine.
+    if (!this.model.hasTrainedModel()) {
+      throw new Error('AI model not trained');
+    }
+
     // Get enough candles for indicators (50 lookback) + 24 timestep window
     const candles = await marketService.getCandleData(symbol, '1h', 100);
     const LOOKBACK = 50;
@@ -130,6 +136,12 @@ export class AITrainingService {
       indicators,
       timestamp: new Date(),
     };
+  }
+
+  async hasTrainedModel(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    await this.model.load();
+    return this.model.hasTrainedModel();
   }
 
   async trainAllModels(symbols: string[]): Promise<void> {

@@ -8,9 +8,11 @@ import { FaWallet, FaArrowUp, FaArrowDown } from 'react-icons/fa';
 export default function PortfolioSnapshot({
   portfolio,
   loading,
+  isPro,
 }: {
   portfolio: PortfolioSummary | null;
   loading: boolean;
+  isPro: boolean;
 }) {
   if (loading) {
     return (
@@ -27,10 +29,21 @@ export default function PortfolioSnapshot({
         <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
           <FaWallet className="mr-2 text-primary" /> Portfolio
         </h3>
-        <p className="text-text-secondary text-sm mb-4">
-          You haven&apos;t recorded any trades yet. Track your holdings to see value and P/L here.
-        </p>
-        <Link href="/portfolio" className="btn-primary px-4 py-2 text-sm inline-block">Record your first trade</Link>
+        {isPro ? (
+          <>
+            <p className="text-text-secondary text-sm mb-4">
+              You haven&apos;t recorded any trades yet. Track your holdings to see value and P/L here.
+            </p>
+            <Link href="/portfolio" className="btn-primary px-4 py-2 text-sm inline-block">Record your first trade</Link>
+          </>
+        ) : (
+          <>
+            <p className="text-text-secondary text-sm mb-4">
+              Portfolio tracking is a Pro feature. Upgrade to track your holdings and P/L.
+            </p>
+            <Link href="/pricing" className="btn-primary px-4 py-2 text-sm inline-block">Upgrade to Pro</Link>
+          </>
+        )}
       </div>
     );
   }

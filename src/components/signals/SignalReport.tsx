@@ -48,7 +48,10 @@ export default function SignalReport({
                 <span className={`px-3 py-0.5 rounded-full text-sm font-semibold ${actionTone(signal.action)}`}>
                   {signal.action}
                 </span>
-                {report.experimental && (
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${signal.engine === 'ai' ? 'text-primary bg-primary/10' : 'text-text-secondary bg-gray-800'}`}>
+                  {signal.engine === 'ai' ? 'AI' : 'Technical'}
+                </span>
+                {report.experimental && signal.engine === 'ai' && (
                   <span className="flex items-center space-x-1 px-2 py-0.5 rounded text-xs font-medium text-orange-400 bg-orange-900/20">
                     <FaFlask className="text-[10px]" />
                     <span>Experimental</span>

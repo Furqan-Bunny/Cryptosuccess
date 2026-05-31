@@ -27,6 +27,8 @@ export default function SignalsPage() {
   const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addQuery, setAddQuery] = useState('');
+  const [aiTrained, setAiTrained] = useState<boolean | null>(null);
+  const [training, setTraining] = useState(false);
 
   const isPro = profile?.subscription?.status === 'pro';
   const maxWatchlist = isPro ? 50 : 5;
@@ -42,6 +44,32 @@ export default function SignalsPage() {
     if (user) checkSignalLimit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, profile]);
+
+  // Whether a trained AI model exists (otherwise signals use the technical engine).
+  useEffect(() => {
+    let mounted = true;
+    import('@/services/ai-signals.service')
+      .then(m => m.aiSignalsService.hasTrainedModel())
+      .then(v => { if (mounted) setAiTrained(v); })
+      .catch(() => { if (mounted) setAiTrained(false); });
+    return () => { mounted = false; };
+  }, []);
+
+  const trainAI = async () => {
+    setTraining(true);
+    const t = toast.loading('Training AI model in your browser… this can take a minute.');
+    try {
+      const m = await import('@/services/ai-signals.service');
+      await m.aiSignalsService.trainAllModels();
+      setAiTrained(true);
+      toast.success('AI model trained — new signals will use it.', { id: t });
+    } catch (e) {
+      console.error('Training failed:', e);
+      toast.error('Training failed. Please try again later.', { id: t });
+    } finally {
+      setTraining(false);
+    }
+  };
 
   const checkSignalLimit = async () => {
     if (!user) return;
@@ -132,12 +160,30 @@ export default function SignalsPage() {
               <h1 className="text-3xl font-bold text-white mb-2">AI Trading Signals</h1>
               <p className="text-text-secondary">Detailed, explainable signals for the coins on your watchlist</p>
             </div>
-            {!isPro && (
+            <div className="flex items-center space-x-6">
+              {!isPro && (
+                <div className="text-right">
+                  <p className="text-sm text-text-secondary mb-1">Signals remaining today</p>
+                  <p className="text-2xl font-bold text-primary">{signalLimit.remaining} / 5</p>
+                </div>
+              )}
               <div className="text-right">
-                <p className="text-sm text-text-secondary mb-1">Signals remaining today</p>
-                <p className="text-2xl font-bold text-primary">{signalLimit.remaining} / 5</p>
+                <p className="text-xs mb-1">
+                  {aiTrained === null
+                    ? <span className="text-text-secondary">Checking AI…</span>
+                    : aiTrained
+                      ? <span className="text-green-400">● AI model active</span>
+                      : <span className="text-text-secondary">Using technical analysis</span>}
+                </p>
+                <button
+                  onClick={trainAI}
+                  disabled={training}
+                  className="btn-secondary px-3 py-1 text-sm disabled:opacity-50"
+                >
+                  {training ? 'Training…' : aiTrained ? 'Retrain AI' : 'Train AI model'}
+                </button>
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>

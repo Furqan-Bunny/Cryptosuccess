@@ -1,7 +1,15 @@
 export class CryptoPredictionModel {
   private model: any | null = null;
   private isTraining = false;
+  private isTrained = false;
   private tf: any = null;
+
+  // True only once a model has been loaded from storage or freshly trained.
+  // A freshly initialized (untrained) model would produce random predictions,
+  // so callers use this to fall back to rule-based signals instead.
+  hasTrainedModel(): boolean {
+    return this.isTrained;
+  }
 
   static readonly TIMESTEPS = 24;
   static readonly FEATURES = 12;
@@ -124,6 +132,7 @@ export class CryptoPredictionModel {
       ys.dispose();
 
       const history = result.history;
+      this.isTrained = true;
       return {
         finalLoss: history.loss[history.loss.length - 1] as number,
         finalAccuracy: history.acc[history.acc.length - 1] as number,
@@ -183,9 +192,11 @@ export class CryptoPredictionModel {
         loss: 'categoricalCrossentropy',
         metrics: ['accuracy'],
       });
+      this.isTrained = true;
     } catch {
       console.log('No saved model found, initializing new LSTM model');
       await this.initializeModel();
+      this.isTrained = false;
     }
   }
 }

@@ -3,6 +3,7 @@ import {
   collection, doc, addDoc, getDocs, query, where, orderBy, limit,
   Timestamp, updateDoc, serverTimestamp
 } from 'firebase/firestore';
+import { marketService } from './market.service';
 
 export interface StoredSignal {
   id?: string;
@@ -74,6 +75,38 @@ class SignalHistoryService {
       outcome,
       evaluatedAt: serverTimestamp(),
     });
+  }
+
+  // Evaluate the user's still-pending signals that are older than 24h, fetching
+  // each symbol's current price once. Each signal is evaluated a single time
+  // (evaluateSignal flips outcome away from 'pending'), so this is idempotent.
+  async evaluatePendingSignals(userId: string): Promise<void> {
+    const signals = await this.getUserSignals(userId, 100);
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const pending = signals.filter(s => {
+      if (s.outcome && s.outcome !== 'pending') return false;
+      const created = s.createdAt instanceof Timestamp
+        ? s.createdAt.toDate()
+        : new Date(s.createdAt as any);
+      return now - created.getTime() >= DAY;
+    });
+
+    const priceCache = new Map<string, number>();
+    for (const s of pending) {
+      if (!s.id) continue;
+      try {
+        let price = priceCache.get(s.symbol);
+        if (price === undefined) {
+          price = (await marketService.getCurrentPrice(s.symbol)).price;
+          priceCache.set(s.symbol, price);
+        }
+        await this.evaluateSignal(s.id, price);
+      } catch (e) {
+        console.error('Failed to evaluate signal', s.id, e);
+      }
+    }
   }
 
   async getSignalStats(userId: string): Promise<{

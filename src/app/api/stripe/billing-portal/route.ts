@@ -12,7 +12,7 @@ function getStripe() {
 
 export async function POST(request: NextRequest) {
   try {
-    const { customerId } = await request.json();
+    const { customerId, returnUrl } = await request.json();
 
     if (!customerId) {
       return NextResponse.json(
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     // Create billing portal session
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: `${process.env.NEXT_PUBLIC_BASE_URL}/dashboard`,
+      return_url: returnUrl || `${process.env.NEXT_PUBLIC_APP_URL || ''}/dashboard`,
     });
 
     return NextResponse.json({ url: session.url });
