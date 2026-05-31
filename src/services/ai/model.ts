@@ -13,6 +13,8 @@ export class CryptoPredictionModel {
 
   static readonly TIMESTEPS = 24;
   static readonly FEATURES = 12;
+  // Pre-trained model shipped with the app (served statically from /public).
+  static readonly SHIPPED_MODEL_URL = '/models/crypto-prediction-model/model.json';
 
   private async ensureTensorFlow() {
     if (typeof window === 'undefined') {
@@ -183,20 +185,40 @@ export class CryptoPredictionModel {
     await this.model.save('indexeddb://crypto-prediction-model');
   }
 
+  private compileLoaded(tf: any) {
+    this.model.compile({
+      optimizer: tf.train.adam(0.001),
+      loss: 'categoricalCrossentropy',
+      metrics: ['accuracy'],
+    });
+  }
+
   async load(): Promise<void> {
     const tf = await this.ensureTensorFlow();
+
+    // 1) A user's own retrained model (IndexedDB) takes precedence.
     try {
       this.model = await tf.loadLayersModel('indexeddb://crypto-prediction-model');
-      this.model.compile({
-        optimizer: tf.train.adam(0.001),
-        loss: 'categoricalCrossentropy',
-        metrics: ['accuracy'],
-      });
+      this.compileLoaded(tf);
       this.isTrained = true;
+      return;
     } catch {
-      console.log('No saved model found, initializing new LSTM model');
-      await this.initializeModel();
-      this.isTrained = false;
+      // nothing saved locally — fall through to the shipped model
     }
+
+    // 2) The pre-trained model shipped with the app (served from /public).
+    try {
+      this.model = await tf.loadLayersModel(CryptoPredictionModel.SHIPPED_MODEL_URL);
+      this.compileLoaded(tf);
+      this.isTrained = true;
+      return;
+    } catch {
+      // no shipped model available (e.g. offline / 404) — fall through
+    }
+
+    // 3) Fresh, untrained model → callers fall back to the technical engine.
+    console.log('No trained model available, initializing new LSTM model');
+    await this.initializeModel();
+    this.isTrained = false;
   }
 }
