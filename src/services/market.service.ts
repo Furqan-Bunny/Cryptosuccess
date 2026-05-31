@@ -1,5 +1,4 @@
 import axios from 'axios';
-import CryptoJS from 'crypto-js';
 import { TechnicalIndicators } from './ai/indicators';
 
 // Types
@@ -49,8 +48,6 @@ export interface TradeSignal {
 class MarketService {
   private readonly binanceApiUrl = 'https://api.binance.com/api/v3';
   private readonly coingeckoApiUrl = process.env.COINGECKO_API_URL || 'https://api.coingecko.com/api/v3';
-  private readonly binanceApiKey = process.env.BINANCE_API_KEY || '';
-  private readonly binanceSecretKey = process.env.BINANCE_SECRET_KEY || '';
 
   // Symbol mappings
   private readonly symbolMap: { [key: string]: string } = {
@@ -64,25 +61,6 @@ class MarketService {
     'SOL': 'solana',
     'BNB': 'binancecoin',
   };
-
-  constructor() {
-    // Validate API keys on initialization
-    if (!this.binanceApiKey || !this.binanceSecretKey) {
-      console.warn('Binance API keys not configured. Some features may be limited.');
-    }
-  }
-
-  // Generate signature for Binance API requests
-  private generateSignature(queryString: string): string {
-    return CryptoJS.HmacSHA256(queryString, this.binanceSecretKey).toString();
-  }
-
-  // Get headers for authenticated Binance requests
-  private getAuthHeaders(): { [key: string]: string } {
-    return {
-      'X-MBX-APIKEY': this.binanceApiKey,
-    };
-  }
 
   // Get current price for a symbol from Binance
   async getCurrentPrice(symbol: string): Promise<MarketPrice> {
@@ -179,30 +157,6 @@ class MarketService {
     } catch (error) {
       console.error('Error fetching funding rate:', error);
       return null;
-    }
-  }
-
-  // Get account balance (requires authentication)
-  async getAccountBalance(): Promise<any> {
-    try {
-      const timestamp = Date.now();
-      const queryString = `timestamp=${timestamp}`;
-      const signature = this.generateSignature(queryString);
-
-      const response = await axios.get(`${this.binanceApiUrl}/account`, {
-        params: {
-          timestamp,
-          signature,
-        },
-        headers: this.getAuthHeaders(),
-      });
-
-      return response.data.balances.filter((balance: any) =>
-        parseFloat(balance.free) > 0 || parseFloat(balance.locked) > 0
-      );
-    } catch (error) {
-      console.error('Error fetching account balance:', error);
-      throw new Error('Failed to fetch account balance');
     }
   }
 
