@@ -3,7 +3,25 @@ import axios from 'axios';
 
 export const dynamic = 'force-dynamic';
 
-const BINANCE_API_URL = 'https://api.binance.com/api/v3';
+// data-api.binance.vision is Binance's public market-data domain. Unlike
+// api.binance.com it is reachable from cloud / US datacenter IPs (e.g. Vercel
+// serverless regions), which otherwise receive HTTP 451 (restricted location).
+const BINANCE_HOSTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+];
+
+async function binanceGet(path: string, params?: Record<string, string | number>) {
+  let lastError: unknown;
+  for (const host of BINANCE_HOSTS) {
+    try {
+      return await axios.get(`${host}${path}`, { params, timeout: 10000 });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 
 const symbolMap: { [key: string]: string } = {
   'ETH': 'ETHUSDT',
@@ -57,9 +75,7 @@ export async function GET(request: NextRequest) {
     const symbols = Object.values(symbolMap);
 
     // Fetch 24hr ticker data for all symbols
-    const response = await axios.get(`${BINANCE_API_URL}/ticker/24hr`, {
-      timeout: 10000,
-    });
+    const response = await binanceGet('/api/v3/ticker/24hr');
 
     const allTickers = response.data;
     const result: any[] = [];
