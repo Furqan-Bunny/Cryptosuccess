@@ -2,139 +2,94 @@
 
 export const dynamic = 'force-dynamic';
 
-import { useAuth } from '@/hooks/useAuth';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { FaChartLine, FaSignal, FaStar, FaCog } from 'react-icons/fa';
-import Watchlist from '@/components/watchlist/Watchlist';
-import BestCoinOfMonth from '@/components/market/BestCoinOfMonth';
+import { useAuth } from '@/hooks/useAuth';
+import { useMarketData } from '@/hooks/useMarketData';
+import { COIN_SYMBOLS, isSupportedCoin } from '@/lib/coins';
+import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
+import { signalHistoryService } from '@/services/signal-history.service';
+import { sentimentService } from '@/services/sentiment.service';
+
+import MetricStrip from '@/components/dashboard/MetricStrip';
+import PortfolioSnapshot from '@/components/dashboard/PortfolioSnapshot';
+import MarketMovers from '@/components/dashboard/MarketMovers';
+import DashboardWatchlist from '@/components/dashboard/DashboardWatchlist';
 import SentimentGauge from '@/components/market/SentimentGauge';
+import SignalHistory from '@/components/signals/SignalHistory';
+
+interface SignalStats {
+  total: number; wins: number; losses: number; pending: number; winRate: number;
+}
 
 export default function DashboardPage() {
   const { user, profile } = useAuth();
+  const isPro = profile?.subscription?.status === 'pro';
+  const signalsLeft = Math.max(0, 5 - (profile?.subscription?.signalsUsedToday || 0));
+
+  const watchlist = useMemo(
+    () => (profile?.preferences?.watchlist || []).filter(isSupportedCoin),
+    [profile]
+  );
+
+  // Single market-data fetch for the whole dashboard — no WebSockets (realtime
+  // off for speed); one /api/market/all on mount + a 60s refresh. Shared with
+  // the movers and watchlist widgets via the `prices` prop.
+  const { prices } = useMarketData({ symbols: COIN_SYMBOLS, enableRealtime: false });
+
+  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [stats, setStats] = useState<SignalStats | null>(null);
+  const [sentiment, setSentiment] = useState<number | null>(null);
+
+  // Independent, lazy fetches so no single one blocks first paint.
+  useEffect(() => {
+    if (!user) return;
+    setPortfolioLoading(true);
+    portfolioService.getPortfolio(user.uid)
+      .then(setPortfolio).catch(() => setPortfolio(null)).finally(() => setPortfolioLoading(false));
+    signalHistoryService.getSignalStats(user.uid).then(setStats).catch(() => {});
+    sentimentService.getFearGreedIndex().then(s => setSentiment(s.value)).catch(() => setSentiment(null));
+  }, [user]);
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      {/* Welcome Section */}
-      <div className="mb-8">
-        <h2 className="text-3xl font-bold text-white mb-2">
+    <div className="container mx-auto px-4 py-8 space-y-6">
+      {/* Welcome */}
+      <div>
+        <h2 className="text-3xl font-bold text-white mb-1">
           Welcome back, {user?.displayName || user?.email?.split('@')[0]}!
         </h2>
         <p className="text-text-secondary">
-          You're on the {profile?.subscription?.status === 'pro' ? 'Pro' : 'Free'} plan.
-          {profile?.subscription?.status === 'free' && (
+          You&apos;re on the {isPro ? 'Pro' : 'Free'} plan.
+          {!isPro && (
             <>
-              {' '}
-              You have {5 - (profile?.subscription?.signalsUsedToday || 0)} signals remaining today.{' '}
-              <Link href="/pricing" className="text-primary hover:text-primary-light">
-                Upgrade to Pro
-              </Link>
+              {' '}You have {signalsLeft} signals remaining today.{' '}
+              <Link href="/pricing" className="text-primary hover:text-primary-light">Upgrade to Pro</Link>
             </>
           )}
         </p>
       </div>
 
-      {/* Best Coin & Sentiment */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <BestCoinOfMonth />
+      <MetricStrip
+        profile={profile}
+        stats={stats}
+        portfolioValue={portfolio ? portfolio.totalValue : null}
+        sentimentValue={sentiment}
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <PortfolioSnapshot portfolio={portfolio} loading={portfolioLoading} />
+        </div>
         <SentimentGauge />
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <StatCard
-          title="Total Signals Viewed"
-          value={profile?.metadata?.totalSignalsViewed || 0}
-          icon={<FaChartLine />}
-        />
-        <StatCard
-          title="Active Since"
-          value={new Date(profile?.metadata?.createdAt || Date.now()).toLocaleDateString()}
-          icon={<FaChartLine />}
-        />
-        <StatCard
-          title="Subscription"
-          value={profile?.subscription?.status === 'pro' ? 'Pro' : 'Free'}
-          icon={<FaChartLine />}
-        />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <MarketMovers prices={prices} />
+        <DashboardWatchlist prices={prices} watchlist={watchlist} isPro={isPro} />
       </div>
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Watchlist */}
-        <div className="lg:col-span-1">
-          <Watchlist />
-        </div>
-
-        {/* Quick Actions */}
-        <div className="lg:col-span-2">
-          <div className="card p-8">
-            <h3 className="text-2xl font-semibold text-white mb-6">
-              Quick Actions
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Link
-                href="/market"
-                className="flex items-center space-x-4 p-6 bg-surface rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                <FaChartLine className="text-3xl text-primary" />
-                <div>
-                  <h4 className="text-lg font-semibold text-white">Market Overview</h4>
-                  <p className="text-sm text-text-secondary">View real-time prices</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/signals"
-                className="flex items-center space-x-4 p-6 bg-surface rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                <FaSignal className="text-3xl text-green-400" />
-                <div>
-                  <h4 className="text-lg font-semibold text-white">AI Signals</h4>
-                  <p className="text-sm text-text-secondary">Generate trading signals</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/pricing"
-                className="flex items-center space-x-4 p-6 bg-surface rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                <FaStar className="text-3xl text-yellow-400" />
-                <div>
-                  <h4 className="text-lg font-semibold text-white">Upgrade Plan</h4>
-                  <p className="text-sm text-text-secondary">Unlock all features</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/settings"
-                className="flex items-center space-x-4 p-6 bg-surface rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                <FaCog className="text-3xl text-gray-400" />
-                <div>
-                  <h4 className="text-lg font-semibold text-white">Settings</h4>
-                  <p className="text-sm text-text-secondary">Manage preferences</p>
-                </div>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatCard({ title, value, icon }: {
-  title: string;
-  value: string | number;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div className="card p-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="text-primary text-2xl">{icon}</div>
-      </div>
-      <h3 className="text-text-secondary text-sm mb-1">{title}</h3>
-      <p className="text-2xl font-semibold text-white">{value}</p>
+      {user && <SignalHistory userId={user.uid} />}
     </div>
   );
 }
