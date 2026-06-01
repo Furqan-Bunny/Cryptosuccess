@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-06-01T08:32:00.990Z",
+  "engine": "technical",
+  "coins": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "BNB"
+  ],
+  "horizonHours": 24,
+  "targetPct": 5,
+  "stopPct": 2,
+  "totalTrades": 3210,
+  "wins": 1383,
+  "losses": 1827,
+  "winRate": 43.1,
+  "byAction": {
+    "BUY": {
+      "trades": 1603,
+      "winRate": 40.4
+    },
+    "SELL": {
+      "trades": 1607,
+      "winRate": 45.8
+    }
+  },
+  "note": "Walk-forward backtest of the technical engine on 1h candles. Overlapping trades and fees are not modeled. Past performance does not predict future results."
+}

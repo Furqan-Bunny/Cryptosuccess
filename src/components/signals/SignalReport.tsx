@@ -8,9 +8,11 @@ import { getCoinIcon, getCoinName } from '@/lib/coins';
 import SignalNarrative from './SignalNarrative';
 import KeyLevelsPanel from './KeyLevelsPanel';
 import RiskManagementPanel from './RiskManagementPanel';
+import AnalystTake from './AnalystTake';
 import OutlookSummary from '@/components/market/OutlookSummary';
 import IndicatorPanel from '@/components/market/IndicatorPanel';
 import MarketRegimeBadge from '@/components/market/MarketRegimeBadge';
+import type { AnalystTake as AnalystTakeData } from '@/services/ai-analyst.service';
 
 function actionTone(action: string): string {
   if (action === 'BUY') return 'text-green-400 bg-green-900/20';
@@ -28,12 +30,17 @@ export default function SignalReport({
   report,
   loading,
   onRegenerate,
+  analyst,
+  analystLoading,
 }: {
   report: SignalReportData;
   loading: boolean;
   onRegenerate: () => void;
+  analyst?: AnalystTakeData | null;
+  analystLoading?: boolean;
 }) {
   const { signal } = report;
+  const showAnalyst = analystLoading || analyst !== undefined;
 
   return (
     <div className="space-y-6">
@@ -92,6 +99,11 @@ export default function SignalReport({
           </div>
         </div>
       </div>
+
+      {/* AI analyst (Claude) — headline read */}
+      {showAnalyst && (
+        <AnalystTake take={analyst ?? null} loading={!!analystLoading} quantAction={signal.action} />
+      )}
 
       {/* Narrative */}
       <SignalNarrative narrative={report.narrative} />
