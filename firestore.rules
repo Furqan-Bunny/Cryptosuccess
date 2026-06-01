@@ -86,5 +86,11 @@ service cloud.firestore {
       allow create: if isSignedIn();
       allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
+
+    // Daily Market Brief (written server-side via Admin SDK, read by signed-in users)
+    match /briefs/{briefId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
   }
 }

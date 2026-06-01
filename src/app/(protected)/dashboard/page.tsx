@@ -12,6 +12,7 @@ import { signalHistoryService } from '@/services/signal-history.service';
 import { sentimentService } from '@/services/sentiment.service';
 
 import MetricStrip from '@/components/dashboard/MetricStrip';
+import LatestBrief from '@/components/dashboard/LatestBrief';
 import PortfolioSnapshot from '@/components/dashboard/PortfolioSnapshot';
 import MarketMovers from '@/components/dashboard/MarketMovers';
 import DashboardWatchlist from '@/components/dashboard/DashboardWatchlist';
@@ -76,6 +77,8 @@ export default function DashboardPage() {
         portfolioValue={portfolio ? portfolio.totalValue : null}
         sentimentValue={sentiment}
       />
+
+      <LatestBrief />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">

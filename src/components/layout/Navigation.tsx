@@ -19,6 +19,7 @@ import {
   FaBars,
   FaTimes,
   FaUser,
+  FaNewspaper,
 } from 'react-icons/fa';
 
 interface NavLinkProps {
@@ -122,6 +123,7 @@ export default function Navigation() {
               <NavLink href="/dashboard" icon={<FaChartBar />}>Dashboard</NavLink>
               <NavLink href="/market" icon={<FaChartLine />}>Market</NavLink>
               <NavLink href="/signals" icon={<FaSignal />}>Signals</NavLink>
+              <NavLink href="/brief" icon={<FaNewspaper />}>Brief</NavLink>
               <NavLink href="/portfolio" icon={<FaWallet />} requiresPro>Portfolio</NavLink>
               <NavLink href="/trade" icon={<FaExchangeAlt />} requiresPro>Trade</NavLink>
             </div>
@@ -218,6 +220,7 @@ export default function Navigation() {
               <NavLink href="/dashboard" icon={<FaChartBar />} onClick={closeMobile}>Dashboard</NavLink>
               <NavLink href="/market" icon={<FaChartLine />} onClick={closeMobile}>Market</NavLink>
               <NavLink href="/signals" icon={<FaSignal />} onClick={closeMobile}>Signals</NavLink>
+              <NavLink href="/brief" icon={<FaNewspaper />} onClick={closeMobile}>Brief</NavLink>
               <NavLink href="/portfolio" icon={<FaWallet />} requiresPro onClick={closeMobile}>Portfolio</NavLink>
               <NavLink href="/trade" icon={<FaExchangeAlt />} requiresPro onClick={closeMobile}>Trade</NavLink>
             </div>

@@ -102,7 +102,7 @@ export default function SignalReport({
 
       {/* AI analyst (Claude) — headline read */}
       {showAnalyst && (
-        <AnalystTake take={analyst ?? null} loading={!!analystLoading} quantAction={signal.action} />
+        <AnalystTake take={analyst ?? null} loading={!!analystLoading} />
       )}
 
       {/* Narrative */}
