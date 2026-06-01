@@ -18,12 +18,13 @@ const SYMBOL_MAP: Record<string, string> = {
   BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', BNB: 'BNBUSDT',
 };
 const HOST = 'https://data-api.binance.vision';
-const CANDLES_PER_COIN = 3000; // ~125 days of 1h candles (3 paginated requests)
+const CANDLES_PER_COIN = 5000; // ~208 days of 1h candles (5 paginated requests)
 const LOOKBACK = 50;
 const TIMESTEPS = 24; // must match CryptoPredictionModel.TIMESTEPS
 const FEATURES = 12;  // must match prepareNormalizedFeatures output
 const LOOKAHEAD = 24;
-const EPOCHS = 30;
+const EPOCHS = 60;   // upper bound; early stopping ends sooner
+const PATIENCE = 5;  // early-stopping patience on val_loss
 
 interface Candle { time: number; open: number; high: number; low: number; close: number; volume: number; }
 
@@ -125,11 +126,17 @@ async function main() {
   const ys = tf.tensor2d(allLabels, [allLabels.length, 3]);
 
   const model = tf.sequential();
-  model.add(tf.layers.lstm({ inputShape: [TIMESTEPS, FEATURES], units: 32, returnSequences: false }));
+  // Lower capacity + stronger dropout + L2 to curb the overfitting seen with units:32/dropout:0.2.
+  model.add(tf.layers.lstm({ inputShape: [TIMESTEPS, FEATURES], units: 24, returnSequences: false }));
+  model.add(tf.layers.dropout({ rate: 0.35 }));
+  model.add(tf.layers.dense({ units: 16, activation: 'relu', kernelRegularizer: tf.regularizers.l2({ l2: 1e-4 }) }));
   model.add(tf.layers.dropout({ rate: 0.2 }));
-  model.add(tf.layers.dense({ units: 16, activation: 'relu' }));
   model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
-  model.compile({ optimizer: tf.train.adam(0.001), loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
+  model.compile({ optimizer: tf.train.adam(0.0008), loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
+
+  let bestValLoss = Infinity;
+  let bestWeights: any[] | null = null;
+  let wait = 0;
 
   await model.fit(xs, ys, {
     epochs: EPOCHS,
@@ -144,9 +151,25 @@ async function main() {
           `loss=${logs?.loss?.toFixed(4)} acc=${(logs?.acc ?? logs?.accuracy)?.toFixed?.(4)} ` +
           `val_loss=${logs?.val_loss?.toFixed(4)} val_acc=${(logs?.val_acc ?? logs?.val_accuracy)?.toFixed?.(4)}`,
         );
+        const vl = logs?.val_loss ?? logs?.loss ?? Infinity;
+        if (vl < bestValLoss - 1e-4) {
+          bestValLoss = vl;
+          wait = 0;
+          if (bestWeights) bestWeights.forEach(t => t.dispose());
+          bestWeights = model.getWeights().map((w: any) => w.clone());
+        } else if (++wait >= PATIENCE) {
+          (model as any).stopTraining = true;
+        }
       },
     },
   });
+
+  // Restore the best-val_loss weights — tfjs early stopping doesn't do this itself.
+  if (bestWeights) {
+    model.setWeights(bestWeights as any);
+    bestWeights.forEach(t => t.dispose());
+    console.log(`Restored best weights (val_loss=${bestValLoss.toFixed(4)})`);
+  }
 
   xs.dispose();
   ys.dispose();
