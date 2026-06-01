@@ -12,18 +12,21 @@ import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
 import { marketService } from '@/services/market.service';
 import { buildSignalReport, SignalReportData } from '@/services/signal-report.service';
+import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
 import { signalHistoryService } from '@/services/signal-history.service';
 import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
 import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar } from 'react-icons/fa';
 
 import SignalReport from '@/components/signals/SignalReport';
 import SignalHistory from '@/components/signals/SignalHistory';
+import TrackRecord from '@/components/signals/TrackRecord';
 import SentimentGauge from '@/components/market/SentimentGauge';
 
 export default function SignalsPage() {
   const { user, profile, refreshProfile } = useAuth();
   const [signalLimit, setSignalLimit] = useState<{ allowed: boolean; remaining: number }>({ allowed: true, remaining: 5 });
   const [reports, setReports] = useState<SignalReportData[]>([]);
+  const [analyst, setAnalyst] = useState<Record<string, { loading: boolean; take: AnalystTake | null }>>({});
   const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addQuery, setAddQuery] = useState('');
@@ -95,6 +98,12 @@ export default function SignalsPage() {
       }
 
       setReports(prev => [report, ...prev.filter(r => r.signal.symbol !== symbol)]);
+
+      // Fetch the Claude analyst read in the background (automatic per signal).
+      setAnalyst(prev => ({ ...prev, [symbol]: { loading: true, take: null } }));
+      getAnalystTake(report)
+        .then(take => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take } })))
+        .catch(() => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take: null } })));
 
       if (user) {
         try {
@@ -267,6 +276,8 @@ export default function SignalsPage() {
         </div>
 
         {/* Generated reports */}
+        {user && <TrackRecord userId={user.uid} />}
+
         {reports.length > 0 && (
           <div className="space-y-8">
             <h2 className="text-xl font-semibold text-white">Generated Signals</h2>
@@ -276,6 +287,8 @@ export default function SignalsPage() {
                 report={report}
                 loading={loadingSymbol === report.signal.symbol}
                 onRegenerate={() => generate(report.signal.symbol)}
+                analyst={analyst[report.signal.symbol]?.take ?? null}
+                analystLoading={analyst[report.signal.symbol]?.loading ?? false}
               />
             ))}
           </div>
