@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { buildMarketContext } from '@/services/market-context.service';
 import { getCoinName } from '@/lib/coins';
+import { getAdminAuth } from '@/lib/firebase-admin';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // web search + multi-step reasoning needs headroom
@@ -62,22 +63,30 @@ const TRADE_TOOL: Anthropic.Tool = {
   },
 };
 
+// Cap web-search usage to control cost (web search is billed per use + the
+// fetched content inflates input tokens). Single pass, no pause_turn re-loop.
 const WEB_TOOLS: any[] = [
-  { type: 'web_search_20260209', name: 'web_search' },
-  { type: 'web_fetch_20260209', name: 'web_fetch' },
+  { type: 'web_search_20260209', name: 'web_search', max_uses: 3 },
+  { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3 },
 ];
+
+async function getUid(request: NextRequest): Promise<string | null> {
+  const header = request.headers.get('authorization');
+  if (!header?.startsWith('Bearer ')) return null;
+  try {
+    const decoded = await getAdminAuth().verifyIdToken(header.slice(7));
+    return decoded.uid;
+  } catch {
+    return null;
+  }
+}
 
 async function research(client: Anthropic, symbol: string, name: string): Promise<string> {
   try {
     const messages: Anthropic.MessageParam[] = [
       { role: 'user', content: `Research the latest news, catalysts, upcoming events, and market sentiment for ${name} (${symbol}). Summarize the key points in 4-6 short bullets.` },
     ];
-    let resp = await client.messages.create({ model: MODEL, max_tokens: 1200, system: RESEARCH_SYSTEM, tools: WEB_TOOLS, messages });
-    let guard = 0;
-    while (resp.stop_reason === 'pause_turn' && guard++ < 3) {
-      messages.push({ role: 'assistant', content: resp.content });
-      resp = await client.messages.create({ model: MODEL, max_tokens: 1200, system: RESEARCH_SYSTEM, tools: WEB_TOOLS, messages });
-    }
+    const resp = await client.messages.create({ model: MODEL, max_tokens: 800, system: RESEARCH_SYSTEM, tools: WEB_TOOLS, messages });
     return resp.content.filter(b => b.type === 'text').map((b: any) => b.text).join('\n').trim();
   } catch (e) {
     console.warn('AI analyst research step failed (continuing without news):', e);
@@ -91,6 +100,11 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // Auth gate: only signed-in users can trigger this (stops bots/random POSTs
+    // from burning API credit on the public endpoint).
+    const uid = await getUid(request);
+    if (!uid) return NextResponse.json({ available: false, reason: 'unauthorized' }, { status: 401 });
+
     const { symbol, signal } = await request.json();
     if (!symbol) return NextResponse.json({ available: false, reason: 'bad_request' }, { status: 400 });
 

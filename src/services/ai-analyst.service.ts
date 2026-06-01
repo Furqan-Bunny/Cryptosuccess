@@ -1,4 +1,5 @@
 import { SignalReportData } from './signal-report.service';
+import { auth } from './firebase';
 
 export interface HorizonRead {
   verdict: 'BUY' | 'SELL' | 'HOLD';
@@ -31,10 +32,15 @@ export interface AnalystTake {
  */
 export async function getAnalystTake(report: SignalReportData): Promise<AnalystTake | null> {
   try {
+    // The analyst route is auth-gated — send the signed-in user's ID token.
+    // If there's no user, skip the call entirely (no API cost).
+    const token = await auth.currentUser?.getIdToken().catch(() => null);
+    if (!token) return null;
+
     const { signal } = report;
     const res = await fetch('/api/ai/analyst', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         symbol: signal.symbol,
         signal: {
