@@ -20,8 +20,8 @@ For each of BTC, ETH, SOL, BNB: a short paragraph with notable recent news/catal
 End with a one-line reminder that this is not financial advice. Keep it tight (~400-500 words).`;
 
 const WEB_TOOLS: any[] = [
-  { type: 'web_search_20260209', name: 'web_search' },
-  { type: 'web_fetch_20260209', name: 'web_fetch' },
+  { type: 'web_search_20260209', name: 'web_search', max_uses: 6 },
+  { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
 ];
 
 function authorized(request: NextRequest): boolean {
@@ -43,7 +43,7 @@ async function handler(request: NextRequest) {
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: PROMPT }];
     let resp = await client.messages.create({ model: MODEL, max_tokens: 2000, system: SYSTEM, tools: WEB_TOOLS, messages });
     let guard = 0;
-    while (resp.stop_reason === 'pause_turn' && guard++ < 5) {
+    while (resp.stop_reason === 'pause_turn' && guard++ < 2) {
       messages.push({ role: 'assistant', content: resp.content });
       resp = await client.messages.create({ model: MODEL, max_tokens: 2000, system: SYSTEM, tools: WEB_TOOLS, messages });
     }
