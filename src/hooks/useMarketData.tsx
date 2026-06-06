@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { marketService, MarketPrice, CandleData, TradeSignal } from '@/services/market.service';
 import { websocketService, PriceUpdate } from '@/services/websocket.service';
 import { useMarketStore } from '@/stores/market.store';
+import { COIN_SYMBOLS } from '@/lib/coins';
 import toast from 'react-hot-toast';
 
 interface UseMarketDataOptions {
@@ -22,7 +23,7 @@ interface MarketData {
 
 export function useMarketData(options: UseMarketDataOptions = {}) {
   const {
-    symbols = ['BTC', 'ETH', 'BNB', 'SOL', 'ADA', 'XRP', 'DOGE', 'DOT', 'MATIC', 'SHIB', 'TRX', 'AVAX', 'UNI', 'ATOM', 'LTC', 'LINK', 'BCH', 'NEAR', 'ALGO', 'VET'],
+    symbols = COIN_SYMBOLS,
     enableRealtime = true,
     interval = '1h',
   } = options;

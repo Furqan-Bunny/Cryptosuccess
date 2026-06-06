@@ -20,6 +20,10 @@ import {
   FaTimes,
   FaUser,
   FaNewspaper,
+  FaBolt,
+  FaCoins,
+  FaSyncAlt,
+  FaCompass,
 } from 'react-icons/fa';
 
 interface NavLinkProps {
@@ -92,6 +96,10 @@ export default function Navigation() {
       case '/signals': return 'AI Trading Signals';
       case '/portfolio': return 'Portfolio Tracking';
       case '/trade': return 'Trade Execution';
+      case '/futures': return 'Paper Futures';
+      case '/staking': return 'Staking';
+      case '/dca': return 'Recurring Buys';
+      case '/discover': return 'Discover';
       case '/settings': return 'Settings';
       default: return 'CryptoSuccess';
     }
@@ -126,6 +134,10 @@ export default function Navigation() {
               <NavLink href="/brief" icon={<FaNewspaper />}>Brief</NavLink>
               <NavLink href="/portfolio" icon={<FaWallet />} requiresPro>Portfolio</NavLink>
               <NavLink href="/trade" icon={<FaExchangeAlt />} requiresPro>Trade</NavLink>
+              <NavLink href="/futures" icon={<FaBolt />} requiresPro>Futures</NavLink>
+              <NavLink href="/staking" icon={<FaCoins />} requiresPro>Staking</NavLink>
+              <NavLink href="/dca" icon={<FaSyncAlt />} requiresPro>DCA</NavLink>
+              <NavLink href="/discover" icon={<FaCompass />} requiresPro>Discover</NavLink>
             </div>
 
             {/* Right side - User Menu (Desktop) */}
@@ -223,6 +235,10 @@ export default function Navigation() {
               <NavLink href="/brief" icon={<FaNewspaper />} onClick={closeMobile}>Brief</NavLink>
               <NavLink href="/portfolio" icon={<FaWallet />} requiresPro onClick={closeMobile}>Portfolio</NavLink>
               <NavLink href="/trade" icon={<FaExchangeAlt />} requiresPro onClick={closeMobile}>Trade</NavLink>
+              <NavLink href="/futures" icon={<FaBolt />} requiresPro onClick={closeMobile}>Futures</NavLink>
+              <NavLink href="/staking" icon={<FaCoins />} requiresPro onClick={closeMobile}>Staking</NavLink>
+              <NavLink href="/dca" icon={<FaSyncAlt />} requiresPro onClick={closeMobile}>DCA</NavLink>
+              <NavLink href="/discover" icon={<FaCompass />} requiresPro onClick={closeMobile}>Discover</NavLink>
             </div>
 
             <div className="border-t border-gray-800 p-4 space-y-2">

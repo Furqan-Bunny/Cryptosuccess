@@ -16,40 +16,13 @@ import {
 } from 'firebase/firestore';
 import { marketService } from './market.service';
 import { portfolioService } from './portfolio.service';
+import { Order, ExecutionResult, TRADING_FEE_PERCENTAGE } from '@/types/trading.types';
 
-// Types
-export interface Order {
-  id?: string;
-  userId: string;
-  symbol: string;
-  type: 'market' | 'limit' | 'stop-loss';
-  side: 'buy' | 'sell';
-  amount: number;
-  price?: number; // For limit and stop-loss orders
-  stopPrice?: number; // For stop-loss orders
-  status: 'pending' | 'filled' | 'cancelled' | 'expired';
-  filledAmount?: number;
-  filledPrice?: number;
-  fee?: number;
-  createdAt: Timestamp | Date;
-  updatedAt?: Timestamp | Date;
-  expiresAt?: Timestamp | Date;
-  notes?: string;
-}
-
-export interface ExecutionResult {
-  success: boolean;
-  orderId?: string;
-  filledAmount?: number;
-  filledPrice?: number;
-  totalCost?: number;
-  fee?: number;
-  message?: string;
-  error?: string;
-}
+// Re-export so existing imports (`from '@/services/trade-execution.service'`) keep working.
+export type { Order, ExecutionResult };
 
 class TradeExecutionService {
-  private readonly FEE_PERCENTAGE = 0.001; // 0.1% trading fee
+  private readonly FEE_PERCENTAGE = TRADING_FEE_PERCENTAGE; // 0.1% trading fee
 
   // Place a new order
   async placeOrder(userId: string, order: Omit<Order, 'id' | 'userId' | 'status' | 'createdAt'>): Promise<ExecutionResult> {
@@ -82,11 +55,23 @@ class TradeExecutionService {
         createdAt: serverTimestamp() as Timestamp,
       };
 
-      // Add expiration for limit and stop-loss orders (24 hours)
-      if (order.type !== 'market') {
+      // Limit orders expire after 24h. Protective orders (stop-loss /
+      // take-profit / trailing-stop) persist until filled or cancelled.
+      if (order.type === 'limit') {
         const expirationDate = new Date();
         expirationDate.setHours(expirationDate.getHours() + 24);
         orderData.expiresAt = expirationDate;
+      }
+
+      // Seed the trailing-stop high-water mark with the current price so the
+      // engine has a reference from the first tick.
+      if (order.type === 'trailing-stop' && orderData.highWaterMark == null) {
+        try {
+          const mp = await marketService.getCurrentPrice(order.symbol);
+          orderData.highWaterMark = mp.price;
+        } catch {
+          /* engine will initialise from the first observed price */
+        }
       }
 
       const docRef = await addDoc(collection(db, 'orders'), orderData);
@@ -413,8 +398,12 @@ class TradeExecutionService {
       return { valid: false, error: 'Limit orders require a price' };
     }
 
-    if (order.type === 'stop-loss' && !order.stopPrice) {
-      return { valid: false, error: 'Stop-loss orders require a stop price' };
+    if ((order.type === 'stop-loss' || order.type === 'take-profit') && !order.stopPrice) {
+      return { valid: false, error: `${order.type} orders require a trigger price` };
+    }
+
+    if (order.type === 'trailing-stop' && (!order.trailingPercent || order.trailingPercent <= 0)) {
+      return { valid: false, error: 'Trailing-stop orders require a trailing percent' };
     }
 
     return { valid: true };

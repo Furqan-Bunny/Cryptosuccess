@@ -30,6 +30,9 @@ const CoinChart = nextDynamic(() => import('@/components/market/CoinChart'), {
 });
 
 const TIMEFRAMES = [
+  { label: '1m', interval: '1m', limit: 120, intraday: true },
+  { label: '5m', interval: '5m', limit: 120, intraday: true },
+  { label: '15m', interval: '15m', limit: 96, intraday: true },
   { label: '1D', interval: '15m', limit: 96 },
   { label: '1W', interval: '1h', limit: 168 },
   { label: '1M', interval: '4h', limit: 180 },
@@ -53,15 +56,25 @@ export default function CoinDetailPage({ params }: { params: { symbol: string } 
   const meta = getCoinMeta(symbol);
   const experimental = !isAiProfiled(symbol);
 
-  const [tfIndex, setTfIndex] = useState(2); // default 1M
+  const [tfIndex, setTfIndex] = useState(5); // default 1M
   const [chartType, setChartType] = useState<ChartType>('candlestick');
   const tf = TIMEFRAMES[tfIndex];
+  const isIntraday = !!tf.intraday;
 
   const { price, candles, orderBook, loading, error } = useCoinData(symbol, tf.interval, tf.limit);
 
   const [signal, setSignal] = useState<TradeSignal | null>(null);
   const [signalLoading, setSignalLoading] = useState(false);
   const [sentimentValue, setSentimentValue] = useState<number | null>(null);
+
+  // Intraday signals are computed synchronously from the selected candles with
+  // the rule-based engine (no overfit LSTM on minute bars). Swing timeframes
+  // keep the AI 1h signal in `signal`.
+  const intradaySignal = useMemo<TradeSignal | null>(
+    () => (isIntraday && candles.length > 0 ? marketService.generateRuleBasedSignal(symbol, candles, price?.price) : null),
+    [isIntraday, candles, symbol, price?.price]
+  );
+  const displaySignal = isIntraday ? intradaySignal : signal;
 
   const indicators = useMemo<Indicators | null>(() => {
     if (candles.length === 0) return null;
@@ -158,6 +171,15 @@ export default function CoinDetailPage({ params }: { params: { symbol: string } 
         </div>
       </div>
 
+      {/* Intraday noise warning */}
+      {isIntraday && (
+        <div className="mb-3 rounded-lg border border-yellow-700/40 bg-yellow-900/10 p-3 text-xs text-yellow-300/90">
+          <span className="font-semibold">Short-timeframe view ({tf.label}).</span> Lower-timeframe
+          signals are far noisier and closer to random — small edges are easily erased by fees and
+          slippage. Treat intraday reads as low-confidence and size accordingly.
+        </div>
+      )}
+
       {/* Chart */}
       <div className="card p-4 mb-8">
         {loading && candles.length === 0 ? (
@@ -173,16 +195,16 @@ export default function CoinDetailPage({ params }: { params: { symbol: string } 
       {indicators && regime ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <OutlookSummary
-            action={signal?.action ?? null}
+            action={displaySignal?.action ?? null}
             indicators={indicators}
             regime={regime}
             sentimentValue={sentimentValue}
           />
           <CoinSignalCard
-            signal={signal}
-            loading={signalLoading}
-            experimental={experimental}
-            onGenerate={generateSignal}
+            signal={displaySignal}
+            loading={signalLoading && !isIntraday}
+            experimental={experimental || isIntraday}
+            onGenerate={isIntraday ? () => {} : generateSignal}
           />
           <MarketRegimeBadge regime={regime} />
           <IndicatorPanel indicators={indicators} currentPrice={price?.price ?? indicators.ema50} />
