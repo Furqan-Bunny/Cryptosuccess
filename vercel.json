@@ -1,5 +1,9 @@
 {
   "crons": [
-    { "path": "/api/brief/generate", "schedule": "0 8 * * *" }
+    { "path": "/api/engine/tick", "schedule": "* * * * *" },
+    { "path": "/api/brief/generate", "schedule": "0 8 * * *" },
+    { "path": "/api/dca/run", "schedule": "0 9 * * *" },
+    { "path": "/api/staking/refresh", "schedule": "0 7 * * *" },
+    { "path": "/api/discover/scan", "schedule": "0 6 * * *" }
   ]
 }

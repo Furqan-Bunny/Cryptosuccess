@@ -187,6 +187,70 @@ class MarketService {
     };
   }
 
+  // Generate a purely rule-based signal from an already-fetched candle series.
+  // Timeframe-agnostic (works on 1m/5m/15m/1h/...), so it is the right engine
+  // for intraday signals — we deliberately do NOT run the 1h-trained LSTM on
+  // minute bars. Uses ATR for stops/targets at a 1.5:1 reward:risk.
+  generateRuleBasedSignal(symbol: string, candles: CandleData[], currentPrice?: number): TradeSignal {
+    const closes = candles.map(c => c.close);
+    const price = currentPrice ?? (closes.length ? closes[closes.length - 1] : 0);
+    const indicators = this.calculateTechnicalIndicators(candles);
+
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const atr = TechnicalIndicators.calculateATR(highs, lows, closes);
+    const atrVal = atr > 0 ? atr : price * 0.02;
+
+    let action: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+    let confidence = 50;
+    let reasoning = '';
+
+    if (indicators.rsi < 30) {
+      action = 'BUY';
+      confidence = 65;
+      reasoning = 'RSI indicates oversold conditions';
+    } else if (indicators.rsi > 70) {
+      action = 'SELL';
+      confidence = 65;
+      reasoning = 'RSI indicates overbought conditions';
+    }
+
+    if (indicators.ema20 > indicators.ema50 && action === 'HOLD') {
+      action = 'BUY';
+      confidence = 58;
+      reasoning = 'Bullish moving-average alignment';
+    } else if (indicators.ema20 < indicators.ema50 && action === 'HOLD') {
+      action = 'SELL';
+      confidence = 58;
+      reasoning = 'Bearish moving-average alignment';
+    }
+
+    if (indicators.macd.histogram > 0 && action === 'BUY') {
+      confidence += 8;
+      reasoning += '. MACD confirms bullish momentum';
+    } else if (indicators.macd.histogram < 0 && action === 'SELL') {
+      confidence += 8;
+      reasoning += '. MACD confirms bearish momentum';
+    }
+
+    const target =
+      action === 'BUY' ? price + 3 * atrVal : action === 'SELL' ? price - 3 * atrVal : price;
+    const stop =
+      action === 'BUY' ? price - 2 * atrVal : action === 'SELL' ? price + 2 * atrVal : price;
+
+    return {
+      symbol,
+      action,
+      confidence: Math.min(confidence, 85),
+      price,
+      targetPrice: target,
+      stopLoss: stop,
+      reasoning: reasoning || 'No strong technical signal; market is neutral.',
+      timestamp: new Date(),
+      engine: 'technical',
+    };
+  }
+
   // Generate basic trading signal (enhanced with AI when available)
   async generateSignal(symbol: string): Promise<TradeSignal> {
     try {

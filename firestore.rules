@@ -92,5 +92,50 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow write: if false;
     }
+
+    // Simulated cash account (powers paper futures + staking)
+    match /paper_accounts/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Paper futures positions. Owner manages their own; liquidation is written
+    // server-side via the Admin SDK (which bypasses these rules).
+    match /futures_positions/{positionId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Simulated staking positions
+    match /staking_positions/{positionId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // DCA / recurring-buy schedules
+    match /dca_schedules/{scheduleId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Cached staking APYs (written server-side via Admin SDK)
+    match /staking_rates/{symbol} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Newly-detected coin listings (written server-side via Admin SDK)
+    match /new_listings/{listingId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Discovery bookkeeping (known-symbol snapshot) — server-only
+    match /discovery_state/{document=**} {
+      allow read: if false;
+      allow write: if false;
+    }
   }
 }

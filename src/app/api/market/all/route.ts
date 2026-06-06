@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
+import { SYMBOL_TO_BINANCE, COIN_SUPPLIES } from '@/lib/coins';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,51 +24,9 @@ async function binanceGet(path: string, params?: Record<string, string | number>
   throw lastError;
 }
 
-const symbolMap: { [key: string]: string } = {
-  'ETH': 'ETHUSDT',
-  'SOL': 'SOLUSDT',
-  'BNB': 'BNBUSDT',
-  'BTC': 'BTCUSDT',
-  'ADA': 'ADAUSDT',
-  'DOGE': 'DOGEUSDT',
-  'DOT': 'DOTUSDT',
-  'MATIC': 'MATICUSDT',
-  'SHIB': 'SHIBUSDT',
-  'TRX': 'TRXUSDT',
-  'AVAX': 'AVAXUSDT',
-  'UNI': 'UNIUSDT',
-  'ATOM': 'ATOMUSDT',
-  'LTC': 'LTCUSDT',
-  'LINK': 'LINKUSDT',
-  'XRP': 'XRPUSDT',
-  'BCH': 'BCHUSDT',
-  'NEAR': 'NEARUSDT',
-  'ALGO': 'ALGOUSDT',
-  'VET': 'VETUSDT',
-};
-
-const supplies: { [key: string]: number } = {
-  'ETH': 120437300,
-  'SOL': 442000000,
-  'BNB': 153856150,
-  'BTC': 21000000,
-  'ADA': 45000000000,
-  'DOGE': 141000000000,
-  'DOT': 1300000000,
-  'MATIC': 10000000000,
-  'SHIB': 589735000000000,
-  'TRX': 87000000000,
-  'AVAX': 440000000,
-  'UNI': 1000000000,
-  'ATOM': 390000000,
-  'LTC': 84000000,
-  'LINK': 1000000000,
-  'XRP': 100000000000,
-  'BCH': 21000000,
-  'NEAR': 1000000000,
-  'ALGO': 10000000000,
-  'VET': 86712000000,
-};
+// Derived from the single coin catalogue (src/lib/coins.ts).
+const symbolMap = SYMBOL_TO_BINANCE;
+const supplies = COIN_SUPPLIES;
 
 export async function GET(request: NextRequest) {
   try {

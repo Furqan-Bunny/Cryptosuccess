@@ -5,15 +5,20 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
+import SimDisclaimer from '@/components/shared/SimDisclaimer';
 import { useMarketData } from '@/hooks/useMarketData';
-import { tradeExecutionService, Order, ExecutionResult } from '@/services/trade-execution.service';
+import { tradeExecutionService, Order } from '@/services/trade-execution.service';
+import type { OrderType } from '@/types/trading.types';
 import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
 import { marketService } from '@/services/market.service';
+import { COIN_SYMBOLS, getCoinName } from '@/lib/coins';
 import {
   FaExchangeAlt,
   FaShoppingCart,
   FaTag,
   FaShieldAlt,
+  FaBullseye,
+  FaChartLine,
   FaClock,
   FaCheckCircle,
   FaTimesCircle,
@@ -32,19 +37,20 @@ export default function TradePage() {
 
 function TradePageInner() {
   const { user } = useAuth();
-  const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop-loss'>('market');
+  const [orderType, setOrderType] = useState<OrderType>('market');
   const [orderSide, setOrderSide] = useState<'buy' | 'sell'>('buy');
   const [selectedSymbol, setSelectedSymbol] = useState('ETH');
   const [amount, setAmount] = useState('');
   const [price, setPrice] = useState('');
   const [stopPrice, setStopPrice] = useState('');
+  const [trailingPercent, setTrailingPercent] = useState('5');
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [activeTab, setActiveTab] = useState<'place-order' | 'open-orders' | 'order-history'>('place-order');
 
   const { prices } = useMarketData({
-    symbols: ['ETH', 'SOL', 'BNB'],
+    symbols: COIN_SYMBOLS,
     enableRealtime: true
   });
 
@@ -83,13 +89,15 @@ function TradePageInner() {
     setIsPlacingOrder(true);
 
     try {
+      const usesStopPrice = orderType === 'stop-loss' || orderType === 'take-profit';
       const orderData = {
         symbol: selectedSymbol,
         type: orderType,
         side: orderSide,
         amount: parseFloat(amount),
         price: orderType === 'limit' ? parseFloat(price) : undefined,
-        stopPrice: orderType === 'stop-loss' ? parseFloat(stopPrice) : undefined,
+        stopPrice: usesStopPrice ? parseFloat(stopPrice) : undefined,
+        trailingPercent: orderType === 'trailing-stop' ? parseFloat(trailingPercent) : undefined,
       };
 
       const result = await tradeExecutionService.placeOrder(user.uid, orderData);
@@ -170,6 +178,8 @@ function TradePageInner() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
+        <SimDisclaimer className="mb-6" extra="Conditional orders (stop-loss, take-profit, trailing-stop) are filled automatically by a background engine that runs about once a minute." />
+
         {/* Tabs */}
         <div className="flex space-x-6 mb-8 border-b border-gray-800">
           <button
@@ -218,43 +228,29 @@ function TradePageInner() {
                 <h2 className="text-xl font-semibold text-white mb-6">Place New Order</h2>
 
                 {/* Order Type Selection */}
-                <div className="grid grid-cols-3 gap-4 mb-6">
-                  <button
-                    onClick={() => setOrderType('market')}
-                    className={`p-4 rounded-lg border transition-all ${
-                      orderType === 'market'
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-gray-700 text-text-secondary hover:border-gray-600'
-                    }`}
-                  >
-                    <FaShoppingCart className="text-2xl mb-2 mx-auto" />
-                    <p className="font-medium">Market</p>
-                    <p className="text-xs mt-1">Instant execution</p>
-                  </button>
-                  <button
-                    onClick={() => setOrderType('limit')}
-                    className={`p-4 rounded-lg border transition-all ${
-                      orderType === 'limit'
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-gray-700 text-text-secondary hover:border-gray-600'
-                    }`}
-                  >
-                    <FaTag className="text-2xl mb-2 mx-auto" />
-                    <p className="font-medium">Limit</p>
-                    <p className="text-xs mt-1">Set your price</p>
-                  </button>
-                  <button
-                    onClick={() => setOrderType('stop-loss')}
-                    className={`p-4 rounded-lg border transition-all ${
-                      orderType === 'stop-loss'
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-gray-700 text-text-secondary hover:border-gray-600'
-                    }`}
-                  >
-                    <FaShieldAlt className="text-2xl mb-2 mx-auto" />
-                    <p className="font-medium">Stop Loss</p>
-                    <p className="text-xs mt-1">Risk protection</p>
-                  </button>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-6">
+                  {([
+                    { type: 'market' as OrderType, icon: <FaShoppingCart className="text-xl mb-2 mx-auto" />, label: 'Market', sub: 'Instant' },
+                    { type: 'limit' as OrderType, icon: <FaTag className="text-xl mb-2 mx-auto" />, label: 'Limit', sub: 'Set price' },
+                    { type: 'stop-loss' as OrderType, icon: <FaShieldAlt className="text-xl mb-2 mx-auto" />, label: 'Stop Loss', sub: 'Cap losses' },
+                    { type: 'take-profit' as OrderType, icon: <FaBullseye className="text-xl mb-2 mx-auto" />, label: 'Take Profit', sub: 'Lock gains' },
+                    { type: 'trailing-stop' as OrderType, icon: <FaChartLine className="text-xl mb-2 mx-auto" />, label: 'Trailing', sub: 'Ride trend' },
+                  ]).map(o => (
+                    <button
+                      type="button"
+                      key={o.type}
+                      onClick={() => setOrderType(o.type)}
+                      className={`p-3 rounded-lg border transition-all text-center ${
+                        orderType === o.type
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-gray-700 text-text-secondary hover:border-gray-600'
+                      }`}
+                    >
+                      {o.icon}
+                      <p className="font-medium text-sm">{o.label}</p>
+                      <p className="text-[10px] mt-1">{o.sub}</p>
+                    </button>
+                  ))}
                 </div>
 
                 <form onSubmit={handlePlaceOrder}>
@@ -294,9 +290,11 @@ function TradePageInner() {
                       onChange={(e) => setSelectedSymbol(e.target.value)}
                       className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:border-primary focus:outline-none"
                     >
-                      <option value="ETH">Ethereum (ETH)</option>
-                      <option value="SOL">Solana (SOL)</option>
-                      <option value="BNB">Binance Coin (BNB)</option>
+                      {COIN_SYMBOLS.map((s) => (
+                        <option key={s} value={s}>
+                          {getCoinName(s)} ({s})
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -351,11 +349,11 @@ function TradePageInner() {
                     </div>
                   )}
 
-                  {/* Stop Price Input (for stop-loss orders) */}
-                  {orderType === 'stop-loss' && (
+                  {/* Trigger Price Input (for stop-loss / take-profit orders) */}
+                  {(orderType === 'stop-loss' || orderType === 'take-profit') && (
                     <div className="mb-6">
                       <label className="block text-sm font-medium text-text-secondary mb-2">
-                        Stop Price ($)
+                        {orderType === 'stop-loss' ? 'Stop Price ($)' : 'Take-Profit Price ($)'}
                         <span className="float-right">
                           Current: {marketService.formatPrice(prices[selectedSymbol]?.price || 0)}
                         </span>
@@ -369,6 +367,28 @@ function TradePageInner() {
                         placeholder="0.00"
                         required
                       />
+                    </div>
+                  )}
+
+                  {/* Trailing percent (for trailing-stop orders) */}
+                  {orderType === 'trailing-stop' && (
+                    <div className="mb-6">
+                      <label className="block text-sm font-medium text-text-secondary mb-2">
+                        Trailing Distance (%)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        value={trailingPercent}
+                        onChange={(e) => setTrailingPercent(e.target.value)}
+                        className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:border-primary focus:outline-none"
+                        placeholder="5"
+                        required
+                      />
+                      <p className="text-xs text-text-secondary mt-2">
+                        The stop trails the best price by this percent and triggers on a pullback.
+                      </p>
                     </div>
                   )}
 
@@ -423,8 +443,20 @@ function TradePageInner() {
                 )}
                 {orderType === 'stop-loss' && (
                   <p className="text-text-secondary">
-                    Stop-loss orders help limit losses by automatically selling when price drops to your
-                    stop price. Essential for risk management.
+                    Stop-loss orders limit losses by automatically selling when price drops to your
+                    stop price. The engine checks open orders every minute and fills them automatically.
+                  </p>
+                )}
+                {orderType === 'take-profit' && (
+                  <p className="text-text-secondary">
+                    Take-profit orders lock in gains by automatically selling when price rises to your
+                    target. The engine monitors and fills them for you.
+                  </p>
+                )}
+                {orderType === 'trailing-stop' && (
+                  <p className="text-text-secondary">
+                    Trailing stops follow the price at a fixed percentage distance, ratcheting up as it
+                    rises and triggering on a pullback — letting winners run while protecting profit.
                   </p>
                 )}
               </div>
@@ -530,6 +562,8 @@ function TradePageInner() {
                           <p className="text-sm text-text-secondary">
                             {order.type === 'limit' && `Limit: ${marketService.formatPrice(order.price || 0)}`}
                             {order.type === 'stop-loss' && `Stop: ${marketService.formatPrice(order.stopPrice || 0)}`}
+                            {order.type === 'take-profit' && `Target: ${marketService.formatPrice(order.stopPrice || 0)}`}
+                            {order.type === 'trailing-stop' && `Trailing ${order.trailingPercent || 0}%`}
                             {order.type === 'market' && 'Market price'}
                           </p>
                         </div>

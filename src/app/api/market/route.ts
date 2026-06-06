@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
+import { SYMBOL_TO_BINANCE, COIN_SUPPLIES } from '@/lib/coins';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,51 +25,9 @@ async function binanceGet(path: string, params?: Record<string, string | number>
   throw lastError;
 }
 
-const symbolMap: { [key: string]: string } = {
-  'ETH': 'ETHUSDT',
-  'SOL': 'SOLUSDT',
-  'BNB': 'BNBUSDT',
-  'BTC': 'BTCUSDT',
-  'ADA': 'ADAUSDT',
-  'DOGE': 'DOGEUSDT',
-  'DOT': 'DOTUSDT',
-  'MATIC': 'MATICUSDT',
-  'SHIB': 'SHIBUSDT',
-  'TRX': 'TRXUSDT',
-  'AVAX': 'AVAXUSDT',
-  'UNI': 'UNIUSDT',
-  'ATOM': 'ATOMUSDT',
-  'LTC': 'LTCUSDT',
-  'LINK': 'LINKUSDT',
-  'XRP': 'XRPUSDT',
-  'BCH': 'BCHUSDT',
-  'NEAR': 'NEARUSDT',
-  'ALGO': 'ALGOUSDT',
-  'VET': 'VETUSDT',
-};
-
-const coingeckoIds: { [key: string]: string } = {
-  'ETH': 'ethereum',
-  'SOL': 'solana',
-  'BNB': 'binancecoin',
-  'BTC': 'bitcoin',
-  'ADA': 'cardano',
-  'DOGE': 'dogecoin',
-  'DOT': 'polkadot',
-  'MATIC': 'matic-network',
-  'SHIB': 'shiba-inu',
-  'TRX': 'tron',
-  'AVAX': 'avalanche-2',
-  'UNI': 'uniswap',
-  'ATOM': 'cosmos',
-  'LTC': 'litecoin',
-  'LINK': 'chainlink',
-  'XRP': 'ripple',
-  'BCH': 'bitcoin-cash',
-  'NEAR': 'near',
-  'ALGO': 'algorand',
-  'VET': 'vechain',
-};
+// Derived from the single coin catalogue (src/lib/coins.ts). Any symbol not in
+// the map falls back to `${symbol}USDT` at the call sites below.
+const symbolMap = SYMBOL_TO_BINANCE;
 
 export async function GET(request: NextRequest) {
   try {
@@ -101,33 +60,10 @@ export async function GET(request: NextRequest) {
 
         const data = priceResponse.data;
 
-        // Calculate market cap estimate based on known supplies
+        // Calculate market cap estimate based on known supplies (from coins.ts)
         let marketCap = 0;
-        const supplies: { [key: string]: number } = {
-          'ETH': 120437300, // Approximate ETH supply
-          'SOL': 442000000, // Approximate SOL supply
-          'BNB': 153856150, // Approximate BNB supply
-          'BTC': 21000000, // BTC max supply
-          'ADA': 45000000000, // ADA max supply
-          'DOGE': 141000000000, // DOGE current supply
-          'DOT': 1300000000, // DOT supply
-          'MATIC': 10000000000, // MATIC max supply
-          'SHIB': 589735000000000, // SHIB supply
-          'TRX': 87000000000, // TRX supply
-          'AVAX': 440000000, // AVAX supply
-          'UNI': 1000000000, // UNI max supply
-          'ATOM': 390000000, // ATOM supply
-          'LTC': 84000000, // LTC max supply
-          'LINK': 1000000000, // LINK max supply
-          'XRP': 100000000000, // XRP max supply
-          'BCH': 21000000, // BCH max supply
-          'NEAR': 1000000000, // NEAR max supply
-          'ALGO': 10000000000, // ALGO max supply
-          'VET': 86712000000, // VET supply
-        };
-
-        if (supplies[symbol]) {
-          marketCap = supplies[symbol] * parseFloat(data.lastPrice);
+        if (COIN_SUPPLIES[symbol]) {
+          marketCap = COIN_SUPPLIES[symbol] * parseFloat(data.lastPrice);
         }
 
         return NextResponse.json({
