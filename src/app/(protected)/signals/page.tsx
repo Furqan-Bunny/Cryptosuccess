@@ -14,7 +14,8 @@ import { buildSignalReport, SignalReportData } from '@/services/signal-report.se
 import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
 import { signalHistoryService } from '@/services/signal-history.service';
 import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
-import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar } from 'react-icons/fa';
+import { HORIZONS, DEFAULT_HORIZON, getHorizon } from '@/lib/horizons';
+import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar, FaClock } from 'react-icons/fa';
 
 import SignalReport from '@/components/signals/SignalReport';
 import SignalHistory from '@/components/signals/SignalHistory';
@@ -31,6 +32,7 @@ export default function SignalsPage() {
   const [addQuery, setAddQuery] = useState('');
   const [aiTrained, setAiTrained] = useState<boolean | null>(null);
   const [training, setTraining] = useState(false);
+  const [horizon, setHorizon] = useState<string>(DEFAULT_HORIZON);
 
   const isPro = profile?.subscription?.status === 'pro';
   const maxWatchlist = isPro ? 50 : 5;
@@ -89,7 +91,7 @@ export default function SignalsPage() {
     }
     setLoadingSymbol(symbol);
     try {
-      const report = await buildSignalReport(symbol);
+      const report = await buildSignalReport(symbol, horizon);
 
       if (user && !isPro) {
         await authService.incrementSignalUsage(user.uid);
@@ -222,6 +224,29 @@ export default function SignalsPage() {
                 <button onClick={() => setShowAddModal(true)} className="btn-secondary px-3 py-1 text-sm flex items-center">
                   <FaPlus className="mr-1" /> Add coins
                 </button>
+              </div>
+
+              {/* Horizon selector */}
+              <div className="mb-4">
+                <p className="text-xs text-text-secondary mb-2 flex items-center">
+                  <FaClock className="mr-1" /> Signal horizon
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {HORIZONS.map(hz => (
+                    <button
+                      key={hz.id}
+                      onClick={() => setHorizon(hz.id)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                        horizon === hz.id ? 'bg-primary text-white' : 'bg-gray-800 text-text-secondary hover:text-white'
+                      }`}
+                    >
+                      {hz.short}
+                    </button>
+                  ))}
+                </div>
+                {getHorizon(horizon).note && (
+                  <p className="text-[11px] text-yellow-300/80 mt-2">{getHorizon(horizon).note}</p>
+                )}
               </div>
 
               {watchlist.length === 0 ? (

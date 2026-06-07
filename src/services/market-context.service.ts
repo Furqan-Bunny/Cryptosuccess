@@ -47,7 +47,7 @@ async function fetchKlines(symbol: string, interval: string, limit: number): Pro
   return rows.map(r => ({ time: r[0], open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] }));
 }
 
-function summarize(candles: Candle[]): TimeframeSummary {
+export function summarizeTimeframe(candles: Candle[]): TimeframeSummary {
   const closes = candles.map(c => c.close);
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
@@ -84,7 +84,7 @@ function summarize(candles: Candle[]): TimeframeSummary {
 export async function buildMarketContext(symbol: string): Promise<MarketContext> {
   const sym = symbol.toUpperCase();
   const entries = await Promise.all(
-    TIMEFRAMES.map(async tf => [tf.label, summarize(await fetchKlines(sym, tf.interval, tf.limit))] as const),
+    TIMEFRAMES.map(async tf => [tf.label, summarizeTimeframe(await fetchKlines(sym, tf.interval, tf.limit))] as const),
   );
   const timeframes: Record<string, TimeframeSummary> = {};
   for (const [label, s] of entries) timeframes[label] = s;

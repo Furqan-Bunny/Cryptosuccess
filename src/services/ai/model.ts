@@ -2,7 +2,14 @@ export class CryptoPredictionModel {
   private model: any | null = null;
   private isTraining = false;
   private isTrained = false;
-  private tf: any = null;
+  private tf: any = null; // TensorFlow.js handle (lazy)
+  private readonly timeframe: string; // which timeframe this model is for
+
+  // Each instance is bound to a timeframe; its weights are loaded from
+  // /models/crypto-{tf}/. Defaults to 1h for backward compatibility.
+  constructor(timeframe: string = '1h') {
+    this.timeframe = timeframe;
+  }
 
   // True only once a model has been loaded from storage or freshly trained.
   // A freshly initialized (untrained) model would produce random predictions,
@@ -13,8 +20,15 @@ export class CryptoPredictionModel {
 
   static readonly TIMESTEPS = 24;
   static readonly FEATURES = 12;
-  // Pre-trained model shipped with the app (served statically from /public).
-  static readonly SHIPPED_MODEL_URL = '/models/crypto-prediction-model/model.json';
+  // Legacy shipped model (1h) — kept as a fallback for the 1h timeframe.
+  static readonly LEGACY_MODEL_URL = '/models/crypto-prediction-model/model.json';
+
+  private shippedUrl(): string {
+    return `/models/crypto-${this.timeframe}/model.json`;
+  }
+  private idbKey(): string {
+    return `indexeddb://crypto-prediction-model-${this.timeframe}`;
+  }
 
   private async ensureTensorFlow() {
     if (typeof window === 'undefined') {
@@ -182,7 +196,7 @@ export class CryptoPredictionModel {
   async save(): Promise<void> {
     await this.ensureTensorFlow();
     if (!this.model) throw new Error('Model not initialized');
-    await this.model.save('indexeddb://crypto-prediction-model');
+    await this.model.save(this.idbKey());
   }
 
   private compileLoaded(tf: any) {
@@ -196,9 +210,9 @@ export class CryptoPredictionModel {
   async load(): Promise<void> {
     const tf = await this.ensureTensorFlow();
 
-    // 1) A user's own retrained model (IndexedDB) takes precedence.
+    // 1) A user's own retrained model for this timeframe (IndexedDB).
     try {
-      this.model = await tf.loadLayersModel('indexeddb://crypto-prediction-model');
+      this.model = await tf.loadLayersModel(this.idbKey());
       this.compileLoaded(tf);
       this.isTrained = true;
       return;
@@ -206,18 +220,30 @@ export class CryptoPredictionModel {
       // nothing saved locally — fall through to the shipped model
     }
 
-    // 2) The pre-trained model shipped with the app (served from /public).
+    // 2) The generalized model shipped for this timeframe (/models/crypto-{tf}/).
     try {
-      this.model = await tf.loadLayersModel(CryptoPredictionModel.SHIPPED_MODEL_URL);
+      this.model = await tf.loadLayersModel(this.shippedUrl());
       this.compileLoaded(tf);
       this.isTrained = true;
       return;
     } catch {
-      // no shipped model available (e.g. offline / 404) — fall through
+      // not shipped yet — fall through
     }
 
-    // 3) Fresh, untrained model → callers fall back to the technical engine.
-    console.log('No trained model available, initializing new LSTM model');
+    // 3) Legacy 1h model fallback (the original shipped model).
+    if (this.timeframe === '1h') {
+      try {
+        this.model = await tf.loadLayersModel(CryptoPredictionModel.LEGACY_MODEL_URL);
+        this.compileLoaded(tf);
+        this.isTrained = true;
+        return;
+      } catch {
+        // fall through
+      }
+    }
+
+    // 4) Fresh, untrained model → callers fall back to the technical engine.
+    console.log(`No trained model available for ${this.timeframe}, using fresh model`);
     await this.initializeModel();
     this.isTrained = false;
   }
