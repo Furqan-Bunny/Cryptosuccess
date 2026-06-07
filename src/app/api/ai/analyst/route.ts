@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { buildMarketContext } from '@/services/market-context.service';
 import { getCoinName } from '@/lib/coins';
-import { getAdminAuth } from '@/lib/firebase-admin';
+import { getUidFromToken } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // web search + multi-step reasoning needs headroom
@@ -73,12 +73,7 @@ const WEB_TOOLS: any[] = [
 async function getUid(request: NextRequest): Promise<string | null> {
   const header = request.headers.get('authorization');
   if (!header?.startsWith('Bearer ')) return null;
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(header.slice(7));
-    return decoded.uid;
-  } catch {
-    return null;
-  }
+  return getUidFromToken(header.slice(7));
 }
 
 async function research(client: Anthropic, symbol: string, name: string): Promise<string> {

@@ -1,8 +1,4 @@
-import { db } from './firebase';
-import {
-  collection, query, where, orderBy, limit, getDocs, doc,
-  addDoc, updateDoc, serverTimestamp, onSnapshot, Unsubscribe
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 
 export type NotificationType = 'signal' | 'price_alert' | 'system' | 'subscription';
 
@@ -17,61 +13,89 @@ export interface Notification {
   data?: Record<string, any>;
 }
 
+function mapRow(row: any): Notification {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    type: row.type,
+    title: row.title,
+    message: row.message,
+    read: row.read,
+    createdAt: row.created_at,
+    data: row.data ?? undefined,
+  };
+}
+
 class NotificationService {
   async getNotifications(userId: string, maxResults = 20): Promise<Notification[]> {
-    const q = query(
-      collection(db, 'notifications'),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(maxResults)
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Notification));
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(maxResults);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapRow);
   }
 
   async getUnreadCount(userId: string): Promise<number> {
-    const q = query(
-      collection(db, 'notifications'),
-      where('userId', '==', userId),
-      where('read', '==', false)
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.size;
+    const { count, error } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('read', false);
+    if (error) return 0;
+    return count ?? 0;
   }
 
   async markAsRead(notificationId: string): Promise<void> {
-    await updateDoc(doc(db, 'notifications', notificationId), { read: true });
+    await supabase.from('notifications').update({ read: true }).eq('id', notificationId);
   }
 
   async markAllAsRead(userId: string): Promise<void> {
-    const notifications = await this.getNotifications(userId, 50);
-    const unread = notifications.filter(n => !n.read);
-    await Promise.all(unread.map(n => this.markAsRead(n.id!)));
+    await supabase.from('notifications').update({ read: true }).eq('user_id', userId).eq('read', false);
   }
 
   async createNotification(notification: Omit<Notification, 'id' | 'createdAt' | 'read'>): Promise<string> {
-    const docRef = await addDoc(collection(db, 'notifications'), {
-      ...notification,
-      read: false,
-      createdAt: serverTimestamp(),
-    });
-    return docRef.id;
+    const { data, error } = await supabase
+      .from('notifications')
+      .insert({
+        user_id: notification.userId,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        read: false,
+        data: notification.data ?? null,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    return data.id;
   }
 
-  subscribeToNotifications(userId: string, callback: (notifications: Notification[]) => void): Unsubscribe {
-    const q = query(
-      collection(db, 'notifications'),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(20)
-    );
-    return onSnapshot(q, (snapshot) => {
-      const notifications = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Notification));
-      callback(notifications);
-    }, (error) => {
-      console.error('Notification listener error:', error);
-      callback([]);
-    });
+  // Realtime subscription (replaces Firestore onSnapshot). Returns an
+  // unsubscribe function. Refetches the list on any change for this user.
+  subscribeToNotifications(userId: string, callback: (notifications: Notification[]) => void): () => void {
+    this.getNotifications(userId, 20).then(callback).catch(() => callback([]));
+
+    const channel = supabase
+      .channel(`notifications:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+        async () => {
+          try {
+            callback(await this.getNotifications(userId, 20));
+          } catch {
+            /* ignore transient errors */
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }
 }
 

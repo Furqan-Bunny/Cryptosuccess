@@ -1,16 +1,4 @@
-import { db } from './firebase';
-import {
-  collection,
-  addDoc,
-  getDocs,
-  doc,
-  getDoc,
-  updateDoc,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { marketService } from './market.service';
 import { paperAccountService } from './paper-account.service';
 import {
@@ -35,9 +23,29 @@ export interface OpenPositionResult {
   error?: string;
 }
 
-// Client-side paper-futures: opens/closes positions and moves margin in/out of
-// the simulated cash account. Liquidation is enforced server-side by the engine
-// (services/engine/order-engine.ts) on the mark (spot) price.
+function mapPosition(row: any): FuturesPosition {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    side: row.side,
+    leverage: Number(row.leverage),
+    entryPrice: Number(row.entry_price),
+    quantity: Number(row.quantity),
+    marginUsd: Number(row.margin_usd),
+    marginMode: row.margin_mode,
+    liquidationPrice: Number(row.liquidation_price),
+    status: row.status,
+    openedAt: row.opened_at,
+    closedAt: row.closed_at ?? undefined,
+    closePrice: row.close_price != null ? Number(row.close_price) : undefined,
+    realizedPnl: row.realized_pnl != null ? Number(row.realized_pnl) : undefined,
+    fundingPaid: row.funding_paid != null ? Number(row.funding_paid) : undefined,
+  };
+}
+
+// Client-side paper futures. Liquidation is enforced server-side by the engine
+// on the mark (spot) price.
 class FuturesService {
   async openPosition(uid: string, input: OpenPositionInput): Promise<OpenPositionResult> {
     const { symbol, side, leverage, marginUsd } = input;
@@ -62,25 +70,27 @@ class FuturesService {
 
       const { quantity, liquidationPrice } = buildPosition(side, entryPrice, leverage, marginUsd);
 
-      // Lock the margin first; if this throws, no position is created.
+      // Lock margin first; if this throws, no position is created.
       await paperAccountService.adjustBalance(uid, -marginUsd);
 
-      const positionData: Omit<FuturesPosition, 'id'> = {
-        userId: uid,
-        symbol: symbol.toUpperCase(),
-        side,
-        leverage,
-        entryPrice,
-        quantity,
-        marginUsd,
-        marginMode: 'isolated',
-        liquidationPrice,
-        status: 'open',
-        openedAt: serverTimestamp() as any,
-      };
-
-      const ref = await addDoc(collection(db, 'futures_positions'), positionData);
-      return { success: true, positionId: ref.id };
+      const { data, error } = await supabase
+        .from('futures_positions')
+        .insert({
+          user_id: uid,
+          symbol: symbol.toUpperCase(),
+          side,
+          leverage,
+          entry_price: entryPrice,
+          quantity,
+          margin_usd: marginUsd,
+          margin_mode: 'isolated',
+          liquidation_price: liquidationPrice,
+          status: 'open',
+        })
+        .select('id')
+        .single();
+      if (error) throw new Error(error.message);
+      return { success: true, positionId: data.id };
     } catch (error: any) {
       console.error('Error opening futures position:', error);
       return { success: false, error: error?.message || 'Failed to open position' };
@@ -89,28 +99,32 @@ class FuturesService {
 
   async closePosition(uid: string, positionId: string): Promise<{ success: boolean; realizedPnl?: number; error?: string }> {
     try {
-      const ref = doc(db, 'futures_positions', positionId);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) return { success: false, error: 'Position not found' };
+      const { data: row } = await supabase
+        .from('futures_positions')
+        .select('*')
+        .eq('id', positionId)
+        .maybeSingle();
+      if (!row) return { success: false, error: 'Position not found' };
 
-      const pos = snap.data() as FuturesPosition;
+      const pos = mapPosition(row);
       if (pos.userId !== uid) return { success: false, error: 'Unauthorized' };
       if (pos.status !== 'open') return { success: false, error: `Position already ${pos.status}` };
 
       const markPrice = (await marketService.getCurrentPrice(pos.symbol)).price;
       const realizedPnl = computePnl(pos.side, pos.entryPrice, markPrice, pos.quantity);
 
-      // Return margin + PnL to the cash account (never less than 0 — a deeper
-      // loss would already have triggered liquidation).
       const credit = Math.max(0, pos.marginUsd + realizedPnl);
       await paperAccountService.adjustBalance(uid, credit);
 
-      await updateDoc(ref, {
-        status: 'closed',
-        closePrice: markPrice,
-        realizedPnl,
-        closedAt: serverTimestamp(),
-      });
+      await supabase
+        .from('futures_positions')
+        .update({
+          status: 'closed',
+          close_price: markPrice,
+          realized_pnl: realizedPnl,
+          closed_at: new Date().toISOString(),
+        })
+        .eq('id', positionId);
 
       return { success: true, realizedPnl };
     } catch (error: any) {
@@ -120,13 +134,13 @@ class FuturesService {
   }
 
   async listPositions(uid: string): Promise<FuturesPosition[]> {
-    const q = query(
-      collection(db, 'futures_positions'),
-      where('userId', '==', uid),
-      orderBy('openedAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<FuturesPosition, 'id'>) }));
+    const { data, error } = await supabase
+      .from('futures_positions')
+      .select('*')
+      .eq('user_id', uid)
+      .order('opened_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapPosition);
   }
 }
 

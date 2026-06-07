@@ -5,8 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { supabase } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
@@ -141,7 +140,7 @@ export default function SignalsPage() {
     }
     try {
       if (user) {
-        await updateDoc(doc(db, 'users', user.uid), { 'preferences.watchlist': [...watchlist, symbol] });
+        await supabase.from('profiles').update({ watchlist: [...watchlist, symbol] }).eq('id', user.uid);
         await refreshProfile();
       }
       toast.success(`${symbol} added to your watchlist`);

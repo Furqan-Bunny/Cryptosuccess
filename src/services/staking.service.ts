@@ -1,22 +1,8 @@
-import { db } from './firebase';
-import {
-  collection,
-  addDoc,
-  getDocs,
-  doc,
-  getDoc,
-  updateDoc,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  Timestamp,
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { paperAccountService } from './paper-account.service';
 
-// Simulated staking. Principal is denominated in USD and locked from the paper
-// cash account; rewards accrue lazily (computed on read) from the snapshotted
-// APY. Unstaking returns principal + accrued rewards to the cash account.
+// Simulated staking. Principal (USD) is locked from the paper cash account;
+// rewards accrue lazily (computed on read) from the snapshotted APY.
 
 export interface StakingRate {
   symbol: string;
@@ -31,13 +17,12 @@ export interface StakingPosition {
   amountUsd: number;
   apySnapshot: number;
   active: boolean;
-  startedAt: Timestamp | Date;
-  closedAt?: Timestamp | Date;
+  startedAt: string | Date;
+  closedAt?: string | Date;
 }
 
 function toDate(value: any): Date {
   if (!value) return new Date();
-  if (typeof value.toDate === 'function') return value.toDate();
   if (value instanceof Date) return value;
   return new Date(value);
 }
@@ -50,13 +35,26 @@ export function accruedRewards(pos: StakingPosition): number {
   return pos.amountUsd * (pos.apySnapshot / 100) * (days / 365);
 }
 
+function mapPosition(row: any): StakingPosition {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    amountUsd: Number(row.amount_usd),
+    apySnapshot: Number(row.apy_snapshot),
+    active: row.active,
+    startedAt: row.started_at,
+    closedAt: row.closed_at ?? undefined,
+  };
+}
+
 class StakingService {
   async getRates(): Promise<Record<string, StakingRate>> {
-    const snap = await getDocs(collection(db, 'staking_rates'));
+    const { data, error } = await supabase.from('staking_rates').select('*');
+    if (error) throw new Error(error.message);
     const map: Record<string, StakingRate> = {};
-    snap.docs.forEach(d => {
-      const data = d.data() as any;
-      map[d.id] = { symbol: d.id, apy: data.apy, source: data.source };
+    (data ?? []).forEach(r => {
+      map[r.symbol] = { symbol: r.symbol, apy: Number(r.apy), source: r.source };
     });
     return map;
   }
@@ -68,14 +66,14 @@ class StakingService {
       if (amountUsd > balance) return { success: false, error: 'Insufficient paper balance' };
 
       await paperAccountService.adjustBalance(uid, -amountUsd);
-      await addDoc(collection(db, 'staking_positions'), {
-        userId: uid,
+      const { error } = await supabase.from('staking_positions').insert({
+        user_id: uid,
         symbol: symbol.toUpperCase(),
-        amountUsd,
-        apySnapshot: apy,
+        amount_usd: amountUsd,
+        apy_snapshot: apy,
         active: true,
-        startedAt: serverTimestamp(),
       });
+      if (error) throw new Error(error.message);
       return { success: true };
     } catch (error: any) {
       console.error('Error staking:', error);
@@ -85,17 +83,23 @@ class StakingService {
 
   async unstake(uid: string, positionId: string): Promise<{ success: boolean; returned?: number; error?: string }> {
     try {
-      const ref = doc(db, 'staking_positions', positionId);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) return { success: false, error: 'Position not found' };
-      const pos = { id: snap.id, ...(snap.data() as Omit<StakingPosition, 'id'>) };
+      const { data: row } = await supabase
+        .from('staking_positions')
+        .select('*')
+        .eq('id', positionId)
+        .maybeSingle();
+      if (!row) return { success: false, error: 'Position not found' };
+      const pos = mapPosition(row);
       if (pos.userId !== uid) return { success: false, error: 'Unauthorized' };
       if (!pos.active) return { success: false, error: 'Already unstaked' };
 
       const rewards = accruedRewards(pos);
       const returned = pos.amountUsd + rewards;
       await paperAccountService.adjustBalance(uid, returned);
-      await updateDoc(ref, { active: false, closedAt: serverTimestamp() });
+      await supabase
+        .from('staking_positions')
+        .update({ active: false, closed_at: new Date().toISOString() })
+        .eq('id', positionId);
       return { success: true, returned };
     } catch (error: any) {
       console.error('Error unstaking:', error);
@@ -104,13 +108,13 @@ class StakingService {
   }
 
   async listPositions(uid: string): Promise<StakingPosition[]> {
-    const q = query(
-      collection(db, 'staking_positions'),
-      where('userId', '==', uid),
-      orderBy('startedAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<StakingPosition, 'id'>) }));
+    const { data, error } = await supabase
+      .from('staking_positions')
+      .select('*')
+      .eq('user_id', uid)
+      .order('started_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapPosition);
   }
 }
 

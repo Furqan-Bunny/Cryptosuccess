@@ -623,11 +623,7 @@ function TradePageInner() {
                             {order.status === 'filled' &&
                               `Filled at ${marketService.formatPrice(order.filledPrice || 0)}`}
                             {order.createdAt &&
-                              ` • ${new Date(
-                                order.createdAt instanceof Date
-                                  ? order.createdAt
-                                  : order.createdAt.toDate()
-                              ).toLocaleDateString()}`}
+                              ` • ${new Date(order.createdAt).toLocaleDateString()}`}
                           </p>
                         </div>
                       </div>

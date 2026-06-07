@@ -3,8 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { supabase } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { MarketPrice, marketService } from '@/services/market.service';
 import { COINS, getCoinIcon, getCoinName } from '@/lib/coins';
@@ -26,7 +25,7 @@ export default function DashboardWatchlist({
 
   const update = async (next: string[]) => {
     if (!user) return;
-    await updateDoc(doc(db, 'users', user.uid), { 'preferences.watchlist': next });
+    await supabase.from('profiles').update({ watchlist: next }).eq('id', user.uid);
     await refreshProfile();
   };
 
