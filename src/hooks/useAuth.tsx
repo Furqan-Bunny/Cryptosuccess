@@ -1,10 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '@/services/firebase';
-import { authService } from '@/services/auth.service';
-import { UserProfile } from '@/types/user.types';
+import { supabase } from '@/lib/supabase/client';
+import { authService, toAppUser } from '@/services/auth.service';
+import { User, UserProfile } from '@/types/user.types';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 
@@ -28,40 +27,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
-  // Fetch user profile when auth state changes
-  const fetchUserProfile = useCallback(async (currentUser: User) => {
+  const fetchUserProfile = useCallback(async (uid: string) => {
     try {
-      const userProfile = await authService.getUserProfile(currentUser.uid);
+      const userProfile = await authService.getUserProfile(uid);
       setProfile(userProfile);
     } catch (error) {
       console.error('Error fetching user profile:', error);
-      toast.error('Failed to load user profile');
     }
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-
-      if (currentUser) {
-        await fetchUserProfile(currentUser);
+    // onAuthStateChange fires an INITIAL_SESSION event on subscribe, so this
+    // also covers the initial load.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const appUser = session?.user ? toAppUser(session.user) : null;
+      setUser(appUser);
+      if (appUser) {
+        await fetchUserProfile(appUser.uid);
       } else {
         setProfile(null);
       }
-
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, [fetchUserProfile]);
 
   const signUp = async (email: string, password: string, displayName?: string) => {
     try {
       setLoading(true);
       const newUser = await authService.signUp(email, password, displayName);
-      await fetchUserProfile(newUser);
-      toast.success('Account created successfully! Please check your email to verify your account.');
-      router.push('/dashboard');
+      if (newUser) {
+        await fetchUserProfile(newUser.uid);
+        toast.success('Account created successfully!');
+        router.push('/dashboard');
+      } else {
+        // Email confirmation is enabled on the Supabase project.
+        toast.success('Account created! Check your email to confirm, then sign in.');
+        router.push('/login');
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to create account');
       throw error;
@@ -74,7 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoading(true);
       const currentUser = await authService.signIn(email, password);
-      await fetchUserProfile(currentUser);
+      await fetchUserProfile(currentUser.uid);
       toast.success('Welcome back!');
       router.push('/dashboard');
     } catch (error) {
@@ -87,16 +93,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = async () => {
     try {
-      setLoading(true);
-      const currentUser = await authService.signInWithGoogle();
-      await fetchUserProfile(currentUser);
-      toast.success('Welcome to CryptoSuccess!');
-      router.push('/dashboard');
+      // Redirects to Google and returns to /auth/callback; the listener above
+      // picks up the new session afterwards.
+      await authService.signInWithGoogle();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to sign in with Google');
       throw error;
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -131,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProfile = async () => {
     if (user) {
-      await fetchUserProfile(user);
+      await fetchUserProfile(user.uid);
     }
   };
 

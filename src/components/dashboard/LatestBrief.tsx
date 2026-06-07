@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { supabase } from '@/lib/supabase/client';
 import { FaNewspaper } from 'react-icons/fa';
 
 interface Brief { date: string; markdown: string; }
@@ -24,10 +23,14 @@ export default function LatestBrief() {
 
   useEffect(() => {
     let mounted = true;
-    getDocs(query(collection(db, 'briefs'), orderBy('date', 'desc'), limit(1)))
-      .then(snap => { if (mounted && !snap.empty) setBrief(snap.docs[0].data() as Brief); })
-      .catch(() => {})
-      .finally(() => { if (mounted) setLoaded(true); });
+    supabase
+      .from('briefs')
+      .select('date, markdown')
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => { if (mounted && data) setBrief(data as Brief); })
+      .then(() => { if (mounted) setLoaded(true); });
     return () => { mounted = false; };
   }, []);
 

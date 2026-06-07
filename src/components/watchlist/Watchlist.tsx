@@ -6,8 +6,7 @@ import { useMarketData } from '@/hooks/useMarketData';
 import { marketService } from '@/services/market.service';
 import { authService } from '@/services/auth.service';
 import { FaPlus, FaTimes, FaStar, FaChartLine } from 'react-icons/fa';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { supabase } from '@/lib/supabase/client';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 
@@ -76,9 +75,7 @@ export default function Watchlist({ onSelectSymbol }: WatchlistProps) {
       const newWatchlist = [...watchlist, symbol];
 
       if (user) {
-        await updateDoc(doc(db, 'users', user.uid), {
-          'preferences.watchlist': newWatchlist,
-        });
+        await supabase.from('profiles').update({ watchlist: newWatchlist }).eq('id', user.uid);
         await refreshProfile();
       }
 
@@ -99,9 +96,7 @@ export default function Watchlist({ onSelectSymbol }: WatchlistProps) {
       const newWatchlist = watchlist.filter((s) => s !== symbol);
 
       if (user) {
-        await updateDoc(doc(db, 'users', user.uid), {
-          'preferences.watchlist': newWatchlist,
-        });
+        await supabase.from('profiles').update({ watchlist: newWatchlist }).eq('id', user.uid);
         await refreshProfile();
       }
 

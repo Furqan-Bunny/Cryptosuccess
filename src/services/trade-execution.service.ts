@@ -1,19 +1,4 @@
-import { db } from './firebase';
-import {
-  collection,
-  doc,
-  setDoc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  Timestamp,
-  addDoc,
-  updateDoc,
-  limit
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { marketService } from './market.service';
 import { portfolioService } from './portfolio.service';
 import { Order, ExecutionResult, TRADING_FEE_PERCENTAGE } from '@/types/trading.types';
@@ -21,111 +6,117 @@ import { Order, ExecutionResult, TRADING_FEE_PERCENTAGE } from '@/types/trading.
 // Re-export so existing imports (`from '@/services/trade-execution.service'`) keep working.
 export type { Order, ExecutionResult };
 
-class TradeExecutionService {
-  private readonly FEE_PERCENTAGE = TRADING_FEE_PERCENTAGE; // 0.1% trading fee
+function mapOrder(row: any): Order {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    type: row.type,
+    side: row.side,
+    amount: Number(row.amount),
+    price: row.price != null ? Number(row.price) : undefined,
+    stopPrice: row.stop_price != null ? Number(row.stop_price) : undefined,
+    trailingPercent: row.trailing_percent != null ? Number(row.trailing_percent) : undefined,
+    highWaterMark: row.high_water_mark != null ? Number(row.high_water_mark) : undefined,
+    status: row.status,
+    filledAmount: row.filled_amount != null ? Number(row.filled_amount) : undefined,
+    filledPrice: row.filled_price != null ? Number(row.filled_price) : undefined,
+    fee: row.fee != null ? Number(row.fee) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    notes: row.notes ?? undefined,
+  };
+}
 
-  // Place a new order
+class TradeExecutionService {
+  private readonly FEE_PERCENTAGE = TRADING_FEE_PERCENTAGE;
+
   async placeOrder(userId: string, order: Omit<Order, 'id' | 'userId' | 'status' | 'createdAt'>): Promise<ExecutionResult> {
     try {
-      // Validate order
       const validation = this.validateOrder(order);
-      if (!validation.valid) {
-        return {
-          success: false,
-          error: validation.error
-        };
-      }
+      if (!validation.valid) return { success: false, error: validation.error };
 
-      // Check user's balance for sell orders
       if (order.side === 'sell') {
         const hasBalance = await this.checkBalance(userId, order.symbol, order.amount);
-        if (!hasBalance) {
-          return {
-            success: false,
-            error: 'Insufficient balance'
-          };
-        }
+        if (!hasBalance) return { success: false, error: 'Insufficient balance' };
       }
 
-      // Create order document
-      const orderData: Omit<Order, 'id'> = {
-        ...order,
-        userId,
-        status: 'pending',
-        createdAt: serverTimestamp() as Timestamp,
-      };
-
-      // Limit orders expire after 24h. Protective orders (stop-loss /
-      // take-profit / trailing-stop) persist until filled or cancelled.
+      // Limit orders expire after 24h; protective orders persist until filled/cancelled.
+      let expiresAt: string | null = null;
       if (order.type === 'limit') {
-        const expirationDate = new Date();
-        expirationDate.setHours(expirationDate.getHours() + 24);
-        orderData.expiresAt = expirationDate;
+        expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       }
 
-      // Seed the trailing-stop high-water mark with the current price so the
-      // engine has a reference from the first tick.
-      if (order.type === 'trailing-stop' && orderData.highWaterMark == null) {
+      // Seed trailing-stop high-water mark with the current price.
+      let highWaterMark: number | null = null;
+      if (order.type === 'trailing-stop') {
         try {
-          const mp = await marketService.getCurrentPrice(order.symbol);
-          orderData.highWaterMark = mp.price;
+          highWaterMark = (await marketService.getCurrentPrice(order.symbol)).price;
         } catch {
-          /* engine will initialise from the first observed price */
+          /* engine will initialise from first observed price */
         }
       }
 
-      const docRef = await addDoc(collection(db, 'orders'), orderData);
+      const { data, error } = await supabase
+        .from('orders')
+        .insert({
+          user_id: userId,
+          symbol: order.symbol,
+          type: order.type,
+          side: order.side,
+          amount: order.amount,
+          price: order.price ?? null,
+          stop_price: order.stopPrice ?? null,
+          trailing_percent: order.trailingPercent ?? null,
+          high_water_mark: highWaterMark,
+          status: 'pending',
+          expires_at: expiresAt,
+          notes: order.notes ?? null,
+        })
+        .select('id')
+        .single();
+      if (error) throw new Error(error.message);
 
-      // Execute market orders immediately
       if (order.type === 'market') {
-        return await this.executeMarketOrder(docRef.id, orderData);
+        return await this.executeMarketOrder(data.id, {
+          userId,
+          symbol: order.symbol,
+          side: order.side,
+          amount: order.amount,
+        });
       }
 
-      // For limit and stop-loss orders, they will be executed when conditions are met
-      return {
-        success: true,
-        orderId: docRef.id,
-        message: `${order.type} order placed successfully`
-      };
-    } catch (error) {
+      return { success: true, orderId: data.id, message: `${order.type} order placed successfully` };
+    } catch (error: any) {
       console.error('Error placing order:', error);
-      return {
-        success: false,
-        error: 'Failed to place order'
-      };
+      return { success: false, error: error?.message || 'Failed to place order' };
     }
   }
 
-  // Execute a market order immediately
-  private async executeMarketOrder(orderId: string, order: Omit<Order, 'id'>): Promise<ExecutionResult> {
+  private async executeMarketOrder(
+    orderId: string,
+    order: { userId: string; symbol: string; side: 'buy' | 'sell'; amount: number }
+  ): Promise<ExecutionResult> {
     try {
-      // Get current market price
-      const marketPrice = await marketService.getCurrentPrice(order.symbol);
-      const executionPrice = marketPrice.price;
-
-      // Calculate total cost and fee
+      const executionPrice = (await marketService.getCurrentPrice(order.symbol)).price;
       const subtotal = order.amount * executionPrice;
       const fee = subtotal * this.FEE_PERCENTAGE;
       const totalCost = order.side === 'buy' ? subtotal + fee : subtotal - fee;
 
-      // Update order as filled
-      await updateDoc(doc(db, 'orders', orderId), {
-        status: 'filled',
-        filledAmount: order.amount,
-        filledPrice: executionPrice,
-        fee: fee,
-        updatedAt: serverTimestamp()
-      });
+      await supabase
+        .from('orders')
+        .update({ status: 'filled', filled_amount: order.amount, filled_price: executionPrice, fee, updated_at: new Date().toISOString() })
+        .eq('id', orderId);
 
-      // Record the trade in portfolio
       await portfolioService.recordTrade(order.userId, {
         symbol: order.symbol,
         type: order.side,
         amount: order.amount,
         price: executionPrice,
-        fee: fee,
+        fee,
         totalValue: totalCost,
-        notes: `Market order #${orderId}`
+        notes: `Market order #${orderId}`,
       });
 
       return {
@@ -135,314 +126,67 @@ class TradeExecutionService {
         filledPrice: executionPrice,
         totalCost,
         fee,
-        message: `Market ${order.side} order executed at ${marketService.formatPrice(executionPrice)}`
+        message: `Market ${order.side} order executed at ${marketService.formatPrice(executionPrice)}`,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error executing market order:', error);
-
-      // Update order as failed
-      await updateDoc(doc(db, 'orders', orderId), {
-        status: 'cancelled',
-        updatedAt: serverTimestamp()
-      });
-
-      return {
-        success: false,
-        orderId,
-        error: 'Failed to execute market order'
-      };
+      await supabase.from('orders').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', orderId);
+      return { success: false, orderId, error: 'Failed to execute market order' };
     }
   }
 
-  // Check and execute pending limit orders
-  async checkAndExecuteLimitOrders(): Promise<void> {
-    try {
-      // Get all pending limit orders
-      const ordersQuery = query(
-        collection(db, 'orders'),
-        where('status', '==', 'pending'),
-        where('type', '==', 'limit')
-      );
-
-      const snapshot = await getDocs(ordersQuery);
-      const orders = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Order[];
-
-      // Check each order
-      for (const order of orders) {
-        await this.checkLimitOrder(order);
-      }
-    } catch (error) {
-      console.error('Error checking limit orders:', error);
-    }
-  }
-
-  // Check if a limit order should be executed
-  private async checkLimitOrder(order: Order): Promise<void> {
-    if (!order.id || !order.price) return;
-
-    try {
-      // Check if order has expired
-      if (order.expiresAt) {
-        const expiryDate = order.expiresAt instanceof Timestamp ? order.expiresAt.toDate() : order.expiresAt;
-        if (new Date() > expiryDate) {
-          await updateDoc(doc(db, 'orders', order.id), {
-            status: 'expired',
-            updatedAt: serverTimestamp()
-          });
-          return;
-        }
-      }
-
-      // Get current market price
-      const marketPrice = await marketService.getCurrentPrice(order.symbol);
-      const currentPrice = marketPrice.price;
-
-      // Check if limit order should be executed
-      const shouldExecute =
-        (order.side === 'buy' && currentPrice <= order.price) ||
-        (order.side === 'sell' && currentPrice >= order.price);
-
-      if (shouldExecute) {
-        // Execute at limit price (in real trading, this would be at market price)
-        const executionPrice = order.price;
-        const subtotal = order.amount * executionPrice;
-        const fee = subtotal * this.FEE_PERCENTAGE;
-
-        // Update order as filled
-        await updateDoc(doc(db, 'orders', order.id), {
-          status: 'filled',
-          filledAmount: order.amount,
-          filledPrice: executionPrice,
-          fee: fee,
-          updatedAt: serverTimestamp()
-        });
-
-        // Record the trade
-        const limitTotalValue = (order.amount * executionPrice) + fee;
-        await portfolioService.recordTrade(order.userId, {
-          symbol: order.symbol,
-          type: order.side,
-          amount: order.amount,
-          price: executionPrice,
-          fee: fee,
-          totalValue: limitTotalValue,
-          notes: `Limit order #${order.id}`
-        });
-      }
-    } catch (error) {
-      console.error('Error checking limit order:', error);
-    }
-  }
-
-  // Check and execute stop-loss orders
-  async checkAndExecuteStopLossOrders(): Promise<void> {
-    try {
-      const ordersQuery = query(
-        collection(db, 'orders'),
-        where('status', '==', 'pending'),
-        where('type', '==', 'stop-loss')
-      );
-
-      const snapshot = await getDocs(ordersQuery);
-      const orders = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Order[];
-
-      for (const order of orders) {
-        await this.checkStopLossOrder(order);
-      }
-    } catch (error) {
-      console.error('Error checking stop-loss orders:', error);
-    }
-  }
-
-  // Check if a stop-loss order should be executed
-  private async checkStopLossOrder(order: Order): Promise<void> {
-    if (!order.id || !order.stopPrice) return;
-
-    try {
-      const marketPrice = await marketService.getCurrentPrice(order.symbol);
-      const currentPrice = marketPrice.price;
-
-      // Check if stop-loss should be triggered
-      const shouldTrigger =
-        (order.side === 'sell' && currentPrice <= order.stopPrice) ||
-        (order.side === 'buy' && currentPrice >= order.stopPrice);
-
-      if (shouldTrigger) {
-        // Execute at market price
-        const subtotal = order.amount * currentPrice;
-        const fee = subtotal * this.FEE_PERCENTAGE;
-
-        await updateDoc(doc(db, 'orders', order.id), {
-          status: 'filled',
-          filledAmount: order.amount,
-          filledPrice: currentPrice,
-          fee: fee,
-          updatedAt: serverTimestamp()
-        });
-
-        const stopTotalValue = (order.amount * currentPrice) + fee;
-        await portfolioService.recordTrade(order.userId, {
-          symbol: order.symbol,
-          type: order.side,
-          amount: order.amount,
-          price: currentPrice,
-          fee: fee,
-          totalValue: stopTotalValue,
-          notes: `Stop-loss order #${order.id}`
-        });
-      }
-    } catch (error) {
-      console.error('Error checking stop-loss order:', error);
-    }
-  }
-
-  // Cancel an order
   async cancelOrder(orderId: string, userId: string): Promise<ExecutionResult> {
     try {
-      const orderRef = doc(db, 'orders', orderId);
-      const orderDoc = await getDoc(orderRef);
+      const { data: row } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
+      if (!row) return { success: false, error: 'Order not found' };
+      if (row.user_id !== userId) return { success: false, error: 'Unauthorized' };
+      if (row.status !== 'pending') return { success: false, error: `Order is already ${row.status}` };
 
-      if (!orderDoc.exists()) {
-        return {
-          success: false,
-          error: 'Order not found'
-        };
-      }
-
-      const order = orderDoc.data() as Order;
-
-      // Verify ownership
-      if (order.userId !== userId) {
-        return {
-          success: false,
-          error: 'Unauthorized'
-        };
-      }
-
-      // Check if order can be cancelled
-      if (order.status !== 'pending') {
-        return {
-          success: false,
-          error: `Order is already ${order.status}`
-        };
-      }
-
-      // Cancel the order
-      await updateDoc(orderRef, {
-        status: 'cancelled',
-        updatedAt: serverTimestamp()
-      });
-
-      return {
-        success: true,
-        orderId,
-        message: 'Order cancelled successfully'
-      };
-    } catch (error) {
+      await supabase.from('orders').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', orderId);
+      return { success: true, orderId, message: 'Order cancelled successfully' };
+    } catch (error: any) {
       console.error('Error cancelling order:', error);
-      return {
-        success: false,
-        error: 'Failed to cancel order'
-      };
+      return { success: false, error: 'Failed to cancel order' };
     }
   }
 
-  // Get user's orders
-  async getUserOrders(userId: string, statusFilter?: Order['status'], limitCount: number = 50): Promise<Order[]> {
-    try {
-      let ordersQuery = query(
-        collection(db, 'orders'),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc'),
-        limit(limitCount)
-      );
-
-      if (statusFilter) {
-        ordersQuery = query(
-          collection(db, 'orders'),
-          where('userId', '==', userId),
-          where('status', '==', statusFilter),
-          orderBy('createdAt', 'desc'),
-          limit(limitCount)
-        );
-      }
-
-      const snapshot = await getDocs(ordersQuery);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Order[];
-    } catch (error) {
-      console.error('Error fetching user orders:', error);
-      throw new Error('Failed to fetch orders');
-    }
+  async getUserOrders(userId: string, statusFilter?: Order['status'], limitCount = 50): Promise<Order[]> {
+    let q = supabase
+      .from('orders')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limitCount);
+    if (statusFilter) q = q.eq('status', statusFilter);
+    const { data, error } = await q;
+    if (error) throw new Error('Failed to fetch orders');
+    return (data ?? []).map(mapOrder);
   }
 
-  // Validate order
   private validateOrder(order: Partial<Order>): { valid: boolean; error?: string } {
     if (!order.symbol || !order.type || !order.side || !order.amount) {
       return { valid: false, error: 'Missing required fields' };
     }
-
-    if (order.amount <= 0) {
-      return { valid: false, error: 'Amount must be greater than 0' };
-    }
-
-    if (order.type === 'limit' && !order.price) {
-      return { valid: false, error: 'Limit orders require a price' };
-    }
-
+    if (order.amount <= 0) return { valid: false, error: 'Amount must be greater than 0' };
+    if (order.type === 'limit' && !order.price) return { valid: false, error: 'Limit orders require a price' };
     if ((order.type === 'stop-loss' || order.type === 'take-profit') && !order.stopPrice) {
       return { valid: false, error: `${order.type} orders require a trigger price` };
     }
-
     if (order.type === 'trailing-stop' && (!order.trailingPercent || order.trailingPercent <= 0)) {
       return { valid: false, error: 'Trailing-stop orders require a trailing percent' };
     }
-
     return { valid: true };
   }
 
-  // Check if user has sufficient balance
   private async checkBalance(userId: string, symbol: string, amount: number): Promise<boolean> {
     try {
       const portfolio = await portfolioService.getPortfolio(userId);
       const asset = portfolio.assets.find(a => a.symbol === symbol);
-
       return asset ? asset.amount >= amount : false;
     } catch (error) {
       console.error('Error checking balance:', error);
       return false;
     }
-  }
-
-  // Simulate order execution for demo purposes
-  async simulateOrderExecution(order: Omit<Order, 'id' | 'userId' | 'status' | 'createdAt'>, userId: string): Promise<ExecutionResult> {
-    // This is a simulation that doesn't actually execute trades
-    // It's for demo/testing purposes
-
-    const marketPrice = await marketService.getCurrentPrice(order.symbol);
-    const executionPrice = order.type === 'market' ? marketPrice.price : order.price || marketPrice.price;
-
-    const subtotal = order.amount * executionPrice;
-    const fee = subtotal * this.FEE_PERCENTAGE;
-    const totalCost = order.side === 'buy' ? subtotal + fee : subtotal - fee;
-
-    return {
-      success: true,
-      orderId: 'simulation-' + Date.now(),
-      filledAmount: order.amount,
-      filledPrice: executionPrice,
-      totalCost,
-      fee,
-      message: `Simulated ${order.type} ${order.side} order`
-    };
   }
 }
 

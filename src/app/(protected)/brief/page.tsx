@@ -3,8 +3,7 @@
 export const dynamic = 'force-dynamic';
 
 import { useEffect, useState } from 'react';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { supabase } from '@/lib/supabase/client';
 import ReactMarkdown from 'react-markdown';
 import LoadingSpinner from '@/components/shared/LoadingSpinner';
 import { FaNewspaper } from 'react-icons/fa';
@@ -19,8 +18,13 @@ export default function BriefPage() {
     let mounted = true;
     (async () => {
       try {
-        const snap = await getDocs(query(collection(db, 'briefs'), orderBy('date', 'desc'), limit(1)));
-        if (mounted && !snap.empty) setBrief(snap.docs[0].data() as Brief);
+        const { data } = await supabase
+          .from('briefs')
+          .select('date, markdown')
+          .order('date', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (mounted && data) setBrief(data as Brief);
       } catch (e) {
         console.error('Error loading brief:', e);
       } finally {

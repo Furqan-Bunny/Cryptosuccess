@@ -149,15 +149,15 @@ class StripeService {
   async subscribeToPlan(planId: string, interval: 'monthly' | 'yearly'): Promise<void> {
     try {
       // Get current user from auth
-      const { auth } = await import('./firebase');
-      const user = auth.currentUser;
+      const { supabase } = await import('@/lib/supabase/client');
+      const { data: { user } } = await supabase.auth.getUser();
 
       if (!user) {
         throw new Error('User not authenticated');
       }
 
       await this.createSubscriptionCheckout(
-        user.uid,
+        user.id,
         user.email || '',
         planId === 'pro_monthly' || planId === 'pro_yearly' ? 'pro' : 'enterprise'
       );

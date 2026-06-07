@@ -1,336 +1,162 @@
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-  sendPasswordResetEmail,
-  signInWithPopup,
-  GoogleAuthProvider,
-  updateProfile,
-  User,
-  sendEmailVerification,
-  AuthError,
-} from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { supabase } from '@/lib/supabase/client';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { User, UserProfile } from '@/types/user.types';
 
-// Types
-export interface UserProfile {
-  uid: string;
-  email: string;
-  displayName?: string;
-  photoURL?: string;
-  subscription: {
-    status: 'free' | 'pro' | 'cancelled';
-    planId?: string;
-    customerId?: string;
-    currentPeriodEnd?: Date;
-    signalsUsedToday: number;
-    lastResetDate: Date;
+// Re-export the canonical profile type for any legacy importers.
+export type { UserProfile } from '@/types/user.types';
+
+/** Map a Supabase auth user to the app's Firebase-shaped `User` so existing
+ *  consumers (which read `user.uid`, `user.displayName`, …) keep working. */
+export function toAppUser(u: SupabaseUser): User {
+  const meta = (u.user_metadata ?? {}) as Record<string, any>;
+  return {
+    uid: u.id,
+    email: u.email ?? null,
+    displayName: meta.display_name ?? meta.full_name ?? meta.name ?? null,
+    photoURL: meta.avatar_url ?? meta.picture ?? null,
+    emailVerified: !!u.email_confirmed_at,
   };
-  preferences: {
-    notifications: boolean;
-    timezone: string;
-    watchlist: string[];
-  };
-  metadata: {
-    createdAt: Date;
-    lastLogin: Date;
-    totalSignalsViewed: number;
+}
+
+function mapProfileRow(row: any): UserProfile {
+  return {
+    uid: row.id,
+    email: row.email,
+    displayName: row.display_name ?? undefined,
+    photoURL: row.photo_url ?? undefined,
+    subscription: {
+      status: row.subscription_status,
+      planId: row.plan_id ?? undefined,
+      customerId: row.customer_id ?? undefined,
+      currentPeriodEnd: row.current_period_end ? new Date(row.current_period_end) : undefined,
+      signalsUsedToday: row.signals_used_today ?? 0,
+      lastResetDate: row.last_reset_date ? new Date(row.last_reset_date) : new Date(0),
+    },
+    preferences: {
+      notifications: row.notifications ?? true,
+      timezone: row.timezone ?? 'UTC',
+      watchlist: row.watchlist ?? [],
+    },
+    metadata: {
+      createdAt: row.created_at ? new Date(row.created_at) : new Date(),
+      lastLogin: row.last_login ? new Date(row.last_login) : new Date(),
+      totalSignalsViewed: row.total_signals_viewed ?? 0,
+    },
   };
 }
 
 class AuthService {
-  private googleProvider: GoogleAuthProvider;
-
-  constructor() {
-    this.googleProvider = new GoogleAuthProvider();
-    this.googleProvider.setCustomParameters({
-      prompt: 'select_account',
+  // Sign up with email + password. The profile row is created automatically by
+  // the `handle_new_user` Postgres trigger.
+  async signUp(email: string, password: string, displayName?: string): Promise<User | null> {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: displayName ? { display_name: displayName } : undefined,
+        emailRedirectTo: `${this.appUrl()}/auth/callback`,
+      },
     });
+    if (error) throw new Error(this.friendly(error.message));
+    return data.user ? toAppUser(data.user) : null;
   }
 
-  // Sign up with email and password
-  async signUp(email: string, password: string, displayName?: string): Promise<User> {
-    try {
-      console.log('[AuthService] Attempting signup with:', { email, hasPassword: !!password, displayName });
-
-      // Create user account
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-
-      console.log('[AuthService] User created successfully:', user.uid);
-
-      // Update display name if provided
-      if (displayName) {
-        await updateProfile(user, { displayName });
-      }
-
-      // Create the Firestore profile FIRST, so a later failure (e.g. a
-      // rate-limited verification email) can never leave an auth account
-      // without its user document.
-      await this.createUserProfile(user);
-
-      // Email verification is best-effort — a failure here must not abort signup.
-      try {
-        await sendEmailVerification(user);
-      } catch (verifyError) {
-        console.warn('[AuthService] Could not send verification email:', verifyError);
-      }
-
-      return user;
-    } catch (error) {
-      const authError = error as AuthError;
-      console.error('[AuthService] Signup error:', {
-        code: authError.code,
-        message: authError.message,
-        fullError: authError,
-      });
-      throw this.handleAuthError(authError);
-    }
-  }
-
-  // Sign in with email and password
   async signIn(email: string, password: string): Promise<User> {
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-
-      // Update last login
-      await this.updateLastLogin(user.uid);
-
-      return user;
-    } catch (error) {
-      throw this.handleAuthError(error as AuthError);
-    }
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(this.friendly(error.message));
+    await this.updateLastLogin(data.user.id);
+    return toAppUser(data.user);
   }
 
-  // Sign in with Google
-  async signInWithGoogle(): Promise<User> {
-    try {
-      const result = await signInWithPopup(auth, this.googleProvider);
-      const user = result.user;
-
-      // Check if user profile exists, create if not
-      const userProfile = await this.getUserProfile(user.uid);
-      if (!userProfile) {
-        await this.createUserProfile(user);
-      } else {
-        await this.updateLastLogin(user.uid);
-      }
-
-      return user;
-    } catch (error) {
-      throw this.handleAuthError(error as AuthError);
-    }
+  // Google sign-in is a redirect flow; the browser navigates away and returns
+  // to /auth/callback, which establishes the session.
+  async signInWithGoogle(): Promise<void> {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${this.appUrl()}/auth/callback` },
+    });
+    if (error) throw new Error(this.friendly(error.message));
   }
 
-  // Sign out
   async signOut(): Promise<void> {
-    try {
-      await signOut(auth);
-    } catch (error) {
-      throw this.handleAuthError(error as AuthError);
-    }
+    const { error } = await supabase.auth.signOut();
+    if (error) throw new Error(this.friendly(error.message));
   }
 
-  // Send password reset email
   async resetPassword(email: string): Promise<void> {
-    try {
-      await sendPasswordResetEmail(auth, email, {
-        url: `${process.env.NEXT_PUBLIC_APP_URL}/login`,
-      });
-    } catch (error) {
-      throw this.handleAuthError(error as AuthError);
-    }
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${this.appUrl()}/login`,
+    });
+    if (error) throw new Error(this.friendly(error.message));
   }
 
-  // Create user profile in Firestore
-  private async createUserProfile(user: User): Promise<void> {
-    const userProfile: any = {
-      uid: user.uid,
-      email: user.email!,
-      subscription: {
-        status: 'free',
-        signalsUsedToday: 0,
-        lastResetDate: serverTimestamp(),
-      },
-      preferences: {
-        notifications: true,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        watchlist: ['ETH', 'SOL', 'BNB'],
-      },
-      metadata: {
-        createdAt: serverTimestamp(),
-        lastLogin: serverTimestamp(),
-        totalSignalsViewed: 0,
-      },
-    };
-
-    // Only add optional fields if they exist (Firestore doesn't allow undefined)
-    if (user.displayName) {
-      userProfile.displayName = user.displayName;
+  async getUserProfile(uid: string): Promise<UserProfile | null> {
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+    if (error) {
+      console.error('[AuthService] getUserProfile error:', error.message);
+      return null;
     }
-    if (user.photoURL) {
-      userProfile.photoURL = user.photoURL;
-    }
-
-    // Right after account creation the auth token can briefly lag the write,
-    // surfacing as permission-denied — retry a couple of times before failing.
-    const userRef = doc(db, 'users', user.uid);
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      try {
-        await setDoc(userRef, userProfile);
-        return;
-      } catch (error) {
-        const code = (error as { code?: string })?.code;
-        if (code === 'permission-denied' && attempt < 2) {
-          await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
-          continue;
-        }
-        console.error('[AuthService] Failed to create user profile:', error);
-        throw error;
-      }
-    }
+    return data ? mapProfileRow(data) : null;
   }
 
-  // Get user profile from Firestore
-  // Retries on permission-denied: immediately after sign-in the auth token can
-  // lag behind the Firestore read, surfacing as "Missing or insufficient
-  // permissions" even though the user owns the document.
-  async getUserProfile(uid: string, retries = 2): Promise<UserProfile | null> {
-    const docRef = doc(db, 'users', uid);
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const docSnap = await getDoc(docRef);
-        return docSnap.exists() ? (docSnap.data() as UserProfile) : null;
-      } catch (error) {
-        const code = (error as { code?: string })?.code;
-        if (code === 'permission-denied' && attempt < retries) {
-          await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
-          continue;
-        }
-        throw error;
-      }
-    }
-
-    return null;
-  }
-
-  // Update last login timestamp
   private async updateLastLogin(uid: string): Promise<void> {
-    const userRef = doc(db, 'users', uid);
-    await setDoc(
-      userRef,
-      {
-        metadata: {
-          lastLogin: serverTimestamp(),
-        },
-      },
-      { merge: true }
-    );
+    await supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', uid);
   }
 
-  // Handle authentication errors
-  private handleAuthError(error: AuthError): Error {
-    const errorMessages: { [key: string]: string } = {
-      'auth/email-already-in-use': 'This email is already registered. Please sign in instead.',
-      'auth/invalid-email': 'Please enter a valid email address.',
-      'auth/operation-not-allowed': 'Email/password sign-in is not enabled. Please contact support.',
-      'auth/weak-password': 'Password must be at least 6 characters long.',
-      'auth/user-not-found': 'No account found with this email address.',
-      'auth/wrong-password': 'Incorrect password. Please try again.',
-      'auth/invalid-credential': 'Invalid email or password.',
-      'auth/user-disabled': 'This account has been disabled.',
-      'auth/too-many-requests': 'Too many failed attempts. Please try again later.',
-      'auth/network-request-failed': 'Network error. Please check your connection.',
-      'auth/popup-closed-by-user': 'Sign-in popup was closed.',
-      'auth/cancelled-popup-request': 'Another sign-in popup is already open.',
-      'auth/popup-blocked': 'Sign-in popup was blocked by your browser.',
-      'auth/invalid-api-key': 'Firebase configuration error. Please contact support.',
-      'auth/app-deleted': 'Firebase app has been deleted. Please contact support.',
-      'auth/app-not-authorized': 'This app is not authorized to use Firebase Authentication.',
-      'auth/argument-error': 'Invalid authentication request.',
-      'auth/invalid-user-token': 'Your session has expired. Please sign in again.',
-      'auth/user-token-expired': 'Your session has expired. Please sign in again.',
-    };
-
-    const message = errorMessages[error.code] || `Authentication error: ${error.code}. ${error.message}`;
-    return new Error(message);
-  }
-
-  // Check if user is subscribed to pro plan
   async isProUser(uid: string): Promise<boolean> {
     const profile = await this.getUserProfile(uid);
     return profile?.subscription.status === 'pro';
   }
 
-  // Check daily signal limit for free users
+  // Daily signal limit for free users (5/day). Resets lazily at UTC midnight.
   async checkSignalLimit(uid: string): Promise<{ allowed: boolean; remaining: number }> {
     const profile = await this.getUserProfile(uid);
-    if (!profile) {
-      return { allowed: false, remaining: 0 };
-    }
+    if (!profile) return { allowed: false, remaining: 0 };
+    if (profile.subscription.status === 'pro') return { allowed: true, remaining: -1 };
 
-    // Pro users have unlimited signals
-    if (profile.subscription?.status === 'pro') {
-      return { allowed: true, remaining: -1 };
-    }
-
-    // Check if we need to reset the daily counter
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const lastReset = profile.subscription?.lastResetDate
-      ? new Date(profile.subscription.lastResetDate)
-      : new Date(0);
+    const lastReset = new Date(profile.subscription.lastResetDate);
     lastReset.setHours(0, 0, 0, 0);
 
     if (today > lastReset) {
-      // Reset the counter
-      await setDoc(
-        doc(db, 'users', uid),
-        {
-          subscription: {
-            signalsUsedToday: 0,
-            lastResetDate: serverTimestamp(),
-          },
-        },
-        { merge: true }
-      );
+      await supabase
+        .from('profiles')
+        .update({ signals_used_today: 0, last_reset_date: new Date().toISOString() })
+        .eq('id', uid);
       return { allowed: true, remaining: 5 };
     }
 
-    // Check current usage
-    const signalsUsedToday = profile.subscription?.signalsUsedToday || 0;
-    const remaining = 5 - signalsUsedToday;
-    return {
-      allowed: remaining > 0,
-      remaining: Math.max(0, remaining),
-    };
+    const used = profile.subscription.signalsUsedToday || 0;
+    const remaining = Math.max(0, 5 - used);
+    return { allowed: remaining > 0, remaining };
   }
 
-  // Increment signal usage counter
   async incrementSignalUsage(uid: string): Promise<void> {
-    const userRef = doc(db, 'users', uid);
     const profile = await this.getUserProfile(uid);
+    if (!profile || profile.subscription.status !== 'free') return;
+    await supabase
+      .from('profiles')
+      .update({
+        signals_used_today: (profile.subscription.signalsUsedToday || 0) + 1,
+        total_signals_viewed: (profile.metadata.totalSignalsViewed || 0) + 1,
+      })
+      .eq('id', uid);
+  }
 
-    if (profile && (!profile.subscription?.status || profile.subscription.status === 'free')) {
-      const currentSignalsUsedToday = profile.subscription?.signalsUsedToday || 0;
-      const currentTotalSignalsViewed = profile.metadata?.totalSignalsViewed || 0;
+  private appUrl(): string {
+    if (typeof window !== 'undefined') return window.location.origin;
+    return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  }
 
-      await setDoc(
-        userRef,
-        {
-          subscription: {
-            signalsUsedToday: currentSignalsUsedToday + 1,
-          },
-          metadata: {
-            totalSignalsViewed: currentTotalSignalsViewed + 1,
-          },
-        },
-        { merge: true }
-      );
-    }
+  private friendly(message: string): string {
+    const m = message.toLowerCase();
+    if (m.includes('invalid login')) return 'Invalid email or password.';
+    if (m.includes('already registered') || m.includes('already been registered'))
+      return 'This email is already registered. Please sign in instead.';
+    if (m.includes('password')) return message; // e.g. "Password should be at least 6 characters"
+    if (m.includes('email')) return message;
+    return message || 'Authentication error.';
   }
 }
 

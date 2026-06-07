@@ -1,8 +1,4 @@
-import { db } from './firebase';
-import {
-  collection, doc, addDoc, getDocs, query, where, orderBy, limit,
-  Timestamp, updateDoc, serverTimestamp
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { marketService } from './market.service';
 
 export interface StoredSignal {
@@ -15,46 +11,70 @@ export interface StoredSignal {
   targetPrice: number;
   stopLoss: number;
   reasoning: string;
-  createdAt: Timestamp | Date;
-  evaluatedAt?: Timestamp | Date;
+  createdAt: string | Date;
+  evaluatedAt?: string | Date;
   priceAt24h?: number;
   outcome?: 'hit_target' | 'hit_stop' | 'expired_profit' | 'expired_loss' | 'pending';
   profitLossPercent?: number;
 }
 
-class SignalHistoryService {
-  private readonly collectionName = 'signals';
+function mapRow(row: any): StoredSignal {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    action: row.action,
+    confidence: Number(row.confidence),
+    entryPrice: Number(row.entry_price),
+    targetPrice: Number(row.target_price),
+    stopLoss: Number(row.stop_loss),
+    reasoning: row.reasoning,
+    createdAt: row.created_at,
+    evaluatedAt: row.evaluated_at ?? undefined,
+    priceAt24h: row.price_at_24h != null ? Number(row.price_at_24h) : undefined,
+    outcome: row.outcome ?? undefined,
+    profitLossPercent: row.profit_loss_percent != null ? Number(row.profit_loss_percent) : undefined,
+  };
+}
 
+class SignalHistoryService {
   async storeSignal(signal: Omit<StoredSignal, 'id' | 'createdAt' | 'outcome'>): Promise<string> {
-    const docRef = await addDoc(collection(db, this.collectionName), {
-      ...signal,
-      createdAt: serverTimestamp(),
-      outcome: 'pending',
-    });
-    return docRef.id;
+    const { data, error } = await supabase
+      .from('signals')
+      .insert({
+        user_id: signal.userId,
+        symbol: signal.symbol,
+        action: signal.action,
+        confidence: signal.confidence,
+        entry_price: signal.entryPrice,
+        target_price: signal.targetPrice,
+        stop_loss: signal.stopLoss,
+        reasoning: signal.reasoning,
+        outcome: 'pending',
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    return data.id;
   }
 
   async getUserSignals(userId: string, maxResults = 20): Promise<StoredSignal[]> {
-    const q = query(
-      collection(db, this.collectionName),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(maxResults)
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as StoredSignal));
+    const { data, error } = await supabase
+      .from('signals')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(maxResults);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapRow);
   }
 
   async evaluateSignal(signalId: string, currentPrice: number): Promise<void> {
-    const signals = await getDocs(query(
-      collection(db, this.collectionName),
-      where('__name__', '==', signalId)
-    ));
-    if (signals.empty) return;
+    const { data: row } = await supabase.from('signals').select('*').eq('id', signalId).maybeSingle();
+    if (!row) return;
+    const signal = mapRow(row);
 
-    const signal = signals.docs[0].data() as StoredSignal;
-    const priceDiff = currentPrice - signal.entryPrice;
-    const profitLossPercent = (priceDiff / signal.entryPrice) * 100;
+    const profitLossPercent = ((currentPrice - signal.entryPrice) / signal.entryPrice) * 100;
 
     let outcome: StoredSignal['outcome'];
     if (signal.action === 'BUY') {
@@ -69,17 +89,18 @@ class SignalHistoryService {
       outcome = 'expired_profit';
     }
 
-    await updateDoc(doc(db, this.collectionName, signalId), {
-      priceAt24h: currentPrice,
-      profitLossPercent,
-      outcome,
-      evaluatedAt: serverTimestamp(),
-    });
+    await supabase
+      .from('signals')
+      .update({
+        price_at_24h: currentPrice,
+        profit_loss_percent: profitLossPercent,
+        outcome,
+        evaluated_at: new Date().toISOString(),
+      })
+      .eq('id', signalId);
   }
 
-  // Evaluate the user's still-pending signals that are older than 24h, fetching
-  // each symbol's current price once. Each signal is evaluated a single time
-  // (evaluateSignal flips outcome away from 'pending'), so this is idempotent.
+  // Evaluate still-pending signals older than 24h (idempotent).
   async evaluatePendingSignals(userId: string): Promise<void> {
     const signals = await this.getUserSignals(userId, 100);
     const DAY = 24 * 60 * 60 * 1000;
@@ -87,10 +108,8 @@ class SignalHistoryService {
 
     const pending = signals.filter(s => {
       if (s.outcome && s.outcome !== 'pending') return false;
-      const created = s.createdAt instanceof Timestamp
-        ? s.createdAt.toDate()
-        : new Date(s.createdAt as any);
-      return now - created.getTime() >= DAY;
+      const created = new Date(s.createdAt as any).getTime();
+      return now - created >= DAY;
     });
 
     const priceCache = new Map<string, number>();

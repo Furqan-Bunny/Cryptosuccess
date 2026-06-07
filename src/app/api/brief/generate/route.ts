@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { getAdminDb } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
+import { createServiceClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // research can take a while; capped to the Vercel plan limit
@@ -52,11 +51,7 @@ async function handler(request: NextRequest) {
     if (!markdown) return NextResponse.json({ ok: false, reason: 'empty' }, { status: 502 });
 
     const date = new Date().toISOString().slice(0, 10);
-    await getAdminDb().collection('briefs').doc(date).set({
-      date,
-      markdown,
-      createdAt: FieldValue.serverTimestamp(),
-    });
+    await createServiceClient().from('briefs').upsert({ date, markdown }, { onConflict: 'date' });
 
     return NextResponse.json({ ok: true, date });
   } catch (error) {

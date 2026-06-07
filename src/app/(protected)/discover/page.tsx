@@ -6,8 +6,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import SimDisclaimer from '@/components/shared/SimDisclaimer';
-import { db } from '@/services/firebase';
-import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { isSupportedCoin } from '@/lib/coins';
 import { marketService } from '@/services/market.service';
 import { FaCompass, FaExclamationTriangle } from 'react-icons/fa';
@@ -41,9 +40,20 @@ function DiscoverPageInner() {
   useEffect(() => {
     (async () => {
       try {
-        const q = query(collection(db, 'new_listings'), orderBy('detectedAt', 'desc'), limit(50));
-        const snap = await getDocs(q);
-        setListings(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Listing, 'id'>) })));
+        const { data } = await supabase
+          .from('new_listings')
+          .select('*')
+          .order('detected_at', { ascending: false })
+          .limit(50);
+        setListings(
+          (data ?? []).map(r => ({
+            id: r.id,
+            symbol: r.symbol,
+            pair: r.pair,
+            quoteVolume: Number(r.quote_volume),
+            detectedAt: r.detected_at,
+          }))
+        );
       } catch (e) {
         console.error('Error loading new listings:', e);
       } finally {
