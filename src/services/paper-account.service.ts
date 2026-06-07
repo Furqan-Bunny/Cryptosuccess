@@ -1,35 +1,32 @@
-import { db } from './firebase';
-import { doc, getDoc, setDoc, runTransaction, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 
-// A simulated USD cash account that powers the NEW paper-trading features
-// (futures margin, staking principal). It is intentionally separate from the
-// existing spot portfolio (which derives holdings from the `trades` ledger and
-// has no cash concept) to keep the blast radius small.
+// Simulated USD cash account powering the new paper-trading features (futures
+// margin, staking principal). Atomic balance changes go through the
+// `adjust_paper_balance` Postgres RPC (replaces Firestore runTransaction).
 
 export const STARTING_BALANCE_USD = 10_000;
 
 export interface PaperAccount {
   userId: string;
   balanceUsd: number;
-  createdAt?: Timestamp | Date;
-  updatedAt?: Timestamp | Date;
 }
 
 class PaperAccountService {
-  private ref(uid: string) {
-    return doc(db, 'paper_accounts', uid);
-  }
-
   /** Fetch the account, creating it with the starting balance on first access. */
   async getAccount(uid: string): Promise<PaperAccount> {
-    const ref = this.ref(uid);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      const account = { userId: uid, balanceUsd: STARTING_BALANCE_USD };
-      await setDoc(ref, { ...account, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      return account;
-    }
-    return { userId: uid, ...(snap.data() as Omit<PaperAccount, 'userId'>) };
+    const { data } = await supabase
+      .from('paper_accounts')
+      .select('balance_usd')
+      .eq('user_id', uid)
+      .maybeSingle();
+
+    if (data) return { userId: uid, balanceUsd: Number(data.balance_usd) };
+
+    // Create on first access (ignore duplicate if a race created it).
+    await supabase
+      .from('paper_accounts')
+      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD }, { onConflict: 'user_id', ignoreDuplicates: true });
+    return { userId: uid, balanceUsd: STARTING_BALANCE_USD };
   }
 
   async getBalance(uid: string): Promise<number> {
@@ -37,41 +34,20 @@ class PaperAccountService {
   }
 
   /**
-   * Atomically change the balance. Throws if a deduction would overdraw the
-   * account. Returns the new balance.
+   * Atomically change the balance via RPC (operates on the authenticated user's
+   * account; the `uid` arg is kept for call-site compatibility). Throws on
+   * overdraft. Returns the new balance.
    */
-  async adjustBalance(uid: string, deltaUsd: number): Promise<number> {
-    const ref = this.ref(uid);
-    return runTransaction(db, async tx => {
-      const snap = await tx.get(ref);
-      const current = snap.exists()
-        ? (snap.data().balanceUsd as number)
-        : STARTING_BALANCE_USD;
-      const next = current + deltaUsd;
-      if (next < 0) {
-        throw new Error('Insufficient paper balance');
-      }
-      if (!snap.exists()) {
-        tx.set(ref, {
-          userId: uid,
-          balanceUsd: next,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        tx.update(ref, { balanceUsd: next, updatedAt: serverTimestamp() });
-      }
-      return next;
-    });
+  async adjustBalance(_uid: string, deltaUsd: number): Promise<number> {
+    const { data, error } = await supabase.rpc('adjust_paper_balance', { delta: deltaUsd });
+    if (error) throw new Error(error.message);
+    return Number(data);
   }
 
-  /** Reset the simulated account back to its starting balance. */
   async reset(uid: string): Promise<void> {
-    await setDoc(this.ref(uid), {
-      userId: uid,
-      balanceUsd: STARTING_BALANCE_USD,
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
+    await supabase
+      .from('paper_accounts')
+      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD, updated_at: new Date().toISOString() });
   }
 }
 

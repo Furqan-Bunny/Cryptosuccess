@@ -1,4 +1,5 @@
-import type { Timestamp } from 'firebase/firestore';
+// Timestamps come back from Postgres as ISO strings (or Date in memory).
+type Timestampish = string | Date;
 
 // Order types supported by the paper-trading engine.
 // 'market' / 'limit' / 'stop-loss' are the originals; 'take-profit' and
@@ -22,9 +23,9 @@ export interface Order {
   filledAmount?: number;
   filledPrice?: number;
   fee?: number;
-  createdAt: Timestamp | Date;
-  updatedAt?: Timestamp | Date;
-  expiresAt?: Timestamp | Date;
+  createdAt: Timestampish;
+  updatedAt?: Timestampish;
+  expiresAt?: Timestampish;
   notes?: string;
 }
 

@@ -7,7 +7,8 @@
 // computed here (it requires the live fapi feed and is handled best-effort
 // elsewhere); never derive it additively from the premium index.
 
-import type { Timestamp } from 'firebase/firestore';
+// Timestamps come back from Postgres as ISO strings (or Date in memory).
+type Timestampish = string | Date;
 
 export type PositionSide = 'long' | 'short';
 export type PositionStatus = 'open' | 'closed' | 'liquidated';
@@ -24,8 +25,8 @@ export interface FuturesPosition {
   marginMode: 'isolated';
   liquidationPrice: number;
   status: PositionStatus;
-  openedAt: Timestamp | Date;
-  closedAt?: Timestamp | Date;
+  openedAt: Timestampish;
+  closedAt?: Timestampish;
   closePrice?: number;
   realizedPnl?: number;
   fundingPaid?: number;

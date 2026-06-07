@@ -1,21 +1,7 @@
-import { db } from './firebase';
-import {
-  collection,
-  addDoc,
-  getDocs,
-  doc,
-  updateDoc,
-  deleteDoc,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  Timestamp,
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 
-// Simulated dollar-cost-averaging schedules. The schedule itself lives in
-// `dca_schedules`; execution (recording a simulated buy into `trades`) is done
-// server-side by the /api/dca/run cron via the Admin SDK.
+// Simulated dollar-cost-averaging schedules. Execution (recording simulated
+// buys) is handled server-side by /api/dca/run.
 
 export type DcaCadence = 'daily' | 'weekly';
 
@@ -26,13 +12,27 @@ export interface DcaSchedule {
   amountUsd: number;
   cadence: DcaCadence;
   active: boolean;
-  nextRunAt: Timestamp | Date;
-  lastRunAt?: Timestamp | Date;
-  createdAt: Timestamp | Date;
+  nextRunAt: string | Date;
+  lastRunAt?: string | Date;
+  createdAt: string | Date;
 }
 
 export function cadenceMs(cadence: DcaCadence): number {
   return cadence === 'daily' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+}
+
+function mapRow(row: any): DcaSchedule {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    amountUsd: Number(row.amount_usd),
+    cadence: row.cadence,
+    active: row.active,
+    nextRunAt: row.next_run_at,
+    lastRunAt: row.last_run_at ?? undefined,
+    createdAt: row.created_at,
+  };
 }
 
 class DcaService {
@@ -40,35 +40,39 @@ class DcaService {
     userId: string,
     input: { symbol: string; amountUsd: number; cadence: DcaCadence }
   ): Promise<string> {
-    const nextRunAt = new Date(Date.now() + cadenceMs(input.cadence));
-    const ref = await addDoc(collection(db, 'dca_schedules'), {
-      userId,
-      symbol: input.symbol.toUpperCase(),
-      amountUsd: input.amountUsd,
-      cadence: input.cadence,
-      active: true,
-      nextRunAt,
-      createdAt: serverTimestamp(),
-    });
-    return ref.id;
+    const nextRunAt = new Date(Date.now() + cadenceMs(input.cadence)).toISOString();
+    const { data, error } = await supabase
+      .from('dca_schedules')
+      .insert({
+        user_id: userId,
+        symbol: input.symbol.toUpperCase(),
+        amount_usd: input.amountUsd,
+        cadence: input.cadence,
+        active: true,
+        next_run_at: nextRunAt,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    return data.id;
   }
 
   async listSchedules(userId: string): Promise<DcaSchedule[]> {
-    const q = query(
-      collection(db, 'dca_schedules'),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<DcaSchedule, 'id'>) }));
+    const { data, error } = await supabase
+      .from('dca_schedules')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapRow);
   }
 
   async setActive(id: string, active: boolean): Promise<void> {
-    await updateDoc(doc(db, 'dca_schedules', id), { active });
+    await supabase.from('dca_schedules').update({ active }).eq('id', id);
   }
 
   async deleteSchedule(id: string): Promise<void> {
-    await deleteDoc(doc(db, 'dca_schedules', id));
+    await supabase.from('dca_schedules').delete().eq('id', id);
   }
 }
 

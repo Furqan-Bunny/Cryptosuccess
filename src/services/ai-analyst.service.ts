@@ -1,5 +1,5 @@
 import { SignalReportData } from './signal-report.service';
-import { auth } from './firebase';
+import { supabase } from '@/lib/supabase/client';
 
 export interface HorizonRead {
   verdict: 'BUY' | 'SELL' | 'HOLD';
@@ -32,9 +32,10 @@ export interface AnalystTake {
  */
 export async function getAnalystTake(report: SignalReportData): Promise<AnalystTake | null> {
   try {
-    // The analyst route is auth-gated — send the signed-in user's ID token.
-    // If there's no user, skip the call entirely (no API cost).
-    const token = await auth.currentUser?.getIdToken().catch(() => null);
+    // The analyst route is auth-gated — send the signed-in user's access token.
+    // If there's no session, skip the call entirely (no API cost).
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token ?? null;
     if (!token) return null;
 
     const { signal } = report;

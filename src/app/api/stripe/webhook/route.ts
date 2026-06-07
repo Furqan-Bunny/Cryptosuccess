@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { headers } from 'next/headers';
-import { getAdminDb } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
+import { createServiceClient } from '@/lib/supabase/server';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -46,7 +45,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const db = getAdminDb();
+    const db = createServiceClient();
 
     // Handle the event
     switch (event.type) {
@@ -55,14 +54,17 @@ export async function POST(request: NextRequest) {
         const userId = session.metadata?.userId || session.client_reference_id;
 
         if (userId) {
-          await db.collection('users').doc(userId).update({
-            'subscription.status': 'pro',
-            'subscription.customerId': session.customer as string,
-            'subscription.planId': session.subscription as string,
-            'subscription.currentPeriodEnd': null, // Will be set by subscription.updated
-            'subscription.signalsUsedToday': 0,
-            'subscription.lastResetDate': FieldValue.serverTimestamp(),
-          });
+          await db
+            .from('profiles')
+            .update({
+              subscription_status: 'pro',
+              customer_id: session.customer as string,
+              plan_id: session.subscription as string,
+              current_period_end: null, // set by subscription.updated
+              signals_used_today: 0,
+              last_reset_date: new Date().toISOString(),
+            })
+            .eq('id', userId);
           console.log(`Subscription activated for user: ${userId}`);
         } else {
           console.error('No userId found in checkout session metadata');
@@ -76,10 +78,13 @@ export async function POST(request: NextRequest) {
 
         if (userId) {
           const status = subscription.status === 'active' ? 'pro' : 'free';
-          await db.collection('users').doc(userId).update({
-            'subscription.status': status,
-            'subscription.currentPeriodEnd': new Date((subscription as any).current_period_end * 1000),
-          });
+          await db
+            .from('profiles')
+            .update({
+              subscription_status: status,
+              current_period_end: new Date((subscription as any).current_period_end * 1000).toISOString(),
+            })
+            .eq('id', userId);
           console.log(`Subscription updated for user: ${userId}, status: ${status}`);
         }
         break;
@@ -90,11 +95,10 @@ export async function POST(request: NextRequest) {
         const userId = subscription.metadata?.userId;
 
         if (userId) {
-          await db.collection('users').doc(userId).update({
-            'subscription.status': 'free',
-            'subscription.planId': null,
-            'subscription.currentPeriodEnd': null,
-          });
+          await db
+            .from('profiles')
+            .update({ subscription_status: 'free', plan_id: null, current_period_end: null })
+            .eq('id', userId);
           console.log(`Subscription cancelled for user: ${userId}`);
         }
         break;
@@ -104,15 +108,9 @@ export async function POST(request: NextRequest) {
         const invoice = event.data.object as Stripe.Invoice;
         const customerId = invoice.customer as string;
 
-        // Find user by customerId and warn them
-        const usersSnapshot = await db.collection('users')
-          .where('subscription.customerId', '==', customerId)
-          .limit(1)
-          .get();
-
-        if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-          console.log(`Payment failed for user: ${userDoc.id}, customer: ${customerId}`);
+        const { data } = await db.from('profiles').select('id').eq('customer_id', customerId).limit(1);
+        if (data && data.length > 0) {
+          console.log(`Payment failed for user: ${data[0].id}, customer: ${customerId}`);
         }
         break;
       }

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { FieldValue } from 'firebase-admin/firestore';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
-import { getAdminDb } from '@/lib/firebase-admin';
+import { createServiceClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -35,7 +34,7 @@ async function handler(request: NextRequest) {
   }
 
   try {
-    const db = getAdminDb();
+    const db = createServiceClient();
     let pools: any[] = [];
     try {
       const resp = await axios.get('https://yields.llama.fi/pools', { timeout: 15000 });
@@ -44,36 +43,32 @@ async function handler(request: NextRequest) {
       console.warn('DefiLlama fetch failed; using fallback APYs:', e);
     }
 
-    let updated = 0;
-    for (const coin of STAKEABLE) {
+    const upserts = STAKEABLE.map(coin => {
       let apy = coin.fallbackApy;
       let project = 'estimate';
-
-      // Pick the highest-TVL pool whose symbol contains one of the match tokens
-      // with a plausible APY (filters out exotic/incentive outliers).
       const candidates = pools
         .filter(p => {
           const sym = (p.symbol || '').toUpperCase();
           return coin.match.some(m => sym.includes(m)) && typeof p.apy === 'number' && p.apy > 0 && p.apy < 60;
         })
         .sort((a, b) => (b.tvlUsd || 0) - (a.tvlUsd || 0));
-
       if (candidates.length > 0) {
         apy = Math.round(candidates[0].apy * 100) / 100;
         project = candidates[0].project || 'defillama';
       }
-
-      await db.collection('staking_rates').doc(coin.symbol).set({
+      return {
         symbol: coin.symbol,
         apy,
         project,
         source: project === 'estimate' ? 'estimate' : 'defillama',
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      updated += 1;
-    }
+        updated_at: new Date().toISOString(),
+      };
+    });
 
-    return NextResponse.json({ ok: true, updated });
+    const { error } = await db.from('staking_rates').upsert(upserts, { onConflict: 'symbol' });
+    if (error) throw new Error(error.message);
+
+    return NextResponse.json({ ok: true, updated: upserts.length });
   } catch (error) {
     console.error('Staking refresh error:', error);
     return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });

@@ -1,20 +1,4 @@
-import { db } from './firebase';
-import {
-  collection,
-  doc,
-  setDoc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  Timestamp,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  limit
-} from 'firebase/firestore';
+import { supabase } from '@/lib/supabase/client';
 import { marketService } from './market.service';
 
 // Types
@@ -39,7 +23,7 @@ export interface Trade {
   price: number;
   totalValue: number;
   fee: number;
-  timestamp: Timestamp | Date;
+  timestamp: string | Date;
   notes?: string;
 }
 
@@ -52,314 +36,175 @@ export interface PortfolioSummary {
   lastUpdated: Date;
 }
 
+function mapTrade(row: any): Trade {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    symbol: row.symbol,
+    type: row.type,
+    amount: Number(row.amount),
+    price: Number(row.price),
+    totalValue: Number(row.total_value),
+    fee: Number(row.fee),
+    timestamp: row.created_at,
+    notes: row.notes ?? undefined,
+  };
+}
+
 class PortfolioService {
-  // Get user's portfolio
   async getPortfolio(userId: string): Promise<PortfolioSummary> {
-    try {
-      // Get all trades for the user
-      const tradesQuery = query(
-        collection(db, 'trades'),
-        where('userId', '==', userId),
-        orderBy('timestamp', 'desc')
-      );
-
-      const tradesSnapshot = await getDocs(tradesQuery);
-      const trades = tradesSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Trade[];
-
-      // Calculate portfolio from trades
-      const portfolio = await this.calculatePortfolioFromTrades(trades);
-
-      return portfolio;
-    } catch (error) {
-      console.error('Error getting portfolio:', error);
-      throw new Error('Failed to fetch portfolio');
-    }
+    const { data, error } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) throw new Error(error.message);
+    return this.calculatePortfolioFromTrades((data ?? []).map(mapTrade));
   }
 
-  // Calculate portfolio from trades
   private async calculatePortfolioFromTrades(trades: Trade[]): Promise<PortfolioSummary> {
     const assetMap = new Map<string, PortfolioAsset>();
 
-    // Process each trade
-    for (const trade of trades) {
-      const existing = assetMap.get(trade.symbol) || {
-        symbol: trade.symbol,
-        amount: 0,
-        averagePrice: 0,
-      };
-
+    // Process oldest → newest for correct average-cost maths.
+    const ordered = [...trades].reverse();
+    for (const trade of ordered) {
+      const existing = assetMap.get(trade.symbol) || { symbol: trade.symbol, amount: 0, averagePrice: 0 };
       if (trade.type === 'buy') {
-        // Calculate new average price
-        const totalCost = (existing.amount * existing.averagePrice) + trade.totalValue;
+        const totalCost = existing.amount * existing.averagePrice + trade.totalValue;
         const newAmount = existing.amount + trade.amount;
-        existing.averagePrice = totalCost / newAmount;
+        existing.averagePrice = newAmount > 0 ? totalCost / newAmount : 0;
         existing.amount = newAmount;
-      } else if (trade.type === 'sell') {
-        // Reduce amount (keep average price)
+      } else {
         existing.amount -= trade.amount;
       }
-
-      // Only include assets with positive amounts
-      if (existing.amount > 0) {
-        assetMap.set(trade.symbol, existing);
-      } else {
-        assetMap.delete(trade.symbol);
-      }
+      if (existing.amount > 0.0000001) assetMap.set(trade.symbol, existing);
+      else assetMap.delete(trade.symbol);
     }
 
-    // Get current prices and calculate values
     const assets = Array.from(assetMap.values());
-    const pricesPromises = assets.map(asset => marketService.getCurrentPrice(asset.symbol));
-
     try {
-      const prices = await Promise.all(pricesPromises);
-
-      // Update assets with current prices
-      assets.forEach((asset, index) => {
-        const currentPrice = prices[index].price;
+      const prices = await Promise.all(assets.map(a => marketService.getCurrentPrice(a.symbol)));
+      assets.forEach((asset, i) => {
+        const currentPrice = prices[i].price;
         asset.currentPrice = currentPrice;
         asset.currentValue = asset.amount * currentPrice;
-        asset.profitLoss = asset.currentValue - (asset.amount * asset.averagePrice);
-        asset.profitLossPercentage = ((currentPrice - asset.averagePrice) / asset.averagePrice) * 100;
+        asset.profitLoss = asset.currentValue - asset.amount * asset.averagePrice;
+        asset.profitLossPercentage = asset.averagePrice > 0 ? ((currentPrice - asset.averagePrice) / asset.averagePrice) * 100 : 0;
         asset.lastUpdated = new Date();
       });
     } catch (error) {
       console.error('Error fetching current prices:', error);
     }
 
-    // Calculate totals
-    const totalValue = assets.reduce((sum, asset) => sum + (asset.currentValue || 0), 0);
-    const totalCost = assets.reduce((sum, asset) => sum + (asset.amount * asset.averagePrice), 0);
+    const totalValue = assets.reduce((s, a) => s + (a.currentValue || 0), 0);
+    const totalCost = assets.reduce((s, a) => s + a.amount * a.averagePrice, 0);
     const totalProfitLoss = totalValue - totalCost;
-    const totalProfitLossPercentage = totalCost > 0 ? (totalProfitLoss / totalCost) * 100 : 0;
-
     return {
       totalValue,
       totalCost,
       totalProfitLoss,
-      totalProfitLossPercentage,
+      totalProfitLossPercentage: totalCost > 0 ? (totalProfitLoss / totalCost) * 100 : 0,
       assets,
       lastUpdated: new Date(),
     };
   }
 
-  // Record a trade
   async recordTrade(userId: string, trade: Omit<Trade, 'id' | 'userId' | 'timestamp'>): Promise<string> {
-    try {
-      const tradeData = {
-        ...trade,
-        userId,
-        timestamp: serverTimestamp(),
-        totalValue: trade.amount * trade.price,
-      };
-
-      const docRef = await addDoc(collection(db, 'trades'), tradeData);
-
-      // Update user's portfolio cache
-      await this.updatePortfolioCache(userId);
-
-      return docRef.id;
-    } catch (error) {
-      console.error('Error recording trade:', error);
-      throw new Error('Failed to record trade');
-    }
+    const { data, error } = await supabase
+      .from('trades')
+      .insert({
+        user_id: userId,
+        symbol: trade.symbol,
+        type: trade.type,
+        amount: trade.amount,
+        price: trade.price,
+        total_value: trade.amount * trade.price,
+        fee: trade.fee,
+        notes: trade.notes ?? null,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    await this.updatePortfolioCache(userId);
+    return data.id;
   }
 
-  // Update trade
   async updateTrade(tradeId: string, updates: Partial<Trade>): Promise<void> {
-    try {
-      const tradeRef = doc(db, 'trades', tradeId);
-
-      // Get the trade to get userId
-      const tradeDoc = await getDoc(tradeRef);
-      if (!tradeDoc.exists()) {
-        throw new Error('Trade not found');
-      }
-
-      await updateDoc(tradeRef, {
-        ...updates,
-        totalValue: updates.amount && updates.price ? updates.amount * updates.price : undefined,
-      });
-
-      // Update portfolio cache
-      const trade = tradeDoc.data() as Trade;
-      await this.updatePortfolioCache(trade.userId);
-    } catch (error) {
-      console.error('Error updating trade:', error);
-      throw new Error('Failed to update trade');
+    const patch: Record<string, any> = {};
+    if (updates.symbol !== undefined) patch.symbol = updates.symbol;
+    if (updates.type !== undefined) patch.type = updates.type;
+    if (updates.amount !== undefined) patch.amount = updates.amount;
+    if (updates.price !== undefined) patch.price = updates.price;
+    if (updates.fee !== undefined) patch.fee = updates.fee;
+    if (updates.notes !== undefined) patch.notes = updates.notes;
+    if (updates.amount !== undefined && updates.price !== undefined) {
+      patch.total_value = updates.amount * updates.price;
     }
+    const { data, error } = await supabase.from('trades').update(patch).eq('id', tradeId).select('user_id').single();
+    if (error) throw new Error(error.message);
+    if (data?.user_id) await this.updatePortfolioCache(data.user_id);
   }
 
-  // Delete trade
   async deleteTrade(tradeId: string, userId: string): Promise<void> {
-    try {
-      await deleteDoc(doc(db, 'trades', tradeId));
-      await this.updatePortfolioCache(userId);
-    } catch (error) {
-      console.error('Error deleting trade:', error);
-      throw new Error('Failed to delete trade');
-    }
+    const { error } = await supabase.from('trades').delete().eq('id', tradeId);
+    if (error) throw new Error(error.message);
+    await this.updatePortfolioCache(userId);
   }
 
-  // Get trade history
-  async getTradeHistory(userId: string, limitCount: number = 50): Promise<Trade[]> {
-    try {
-      const tradesQuery = query(
-        collection(db, 'trades'),
-        where('userId', '==', userId),
-        orderBy('timestamp', 'desc'),
-        limit(limitCount)
-      );
-
-      const snapshot = await getDocs(tradesQuery);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Trade[];
-    } catch (error) {
-      console.error('Error fetching trade history:', error);
-      throw new Error('Failed to fetch trade history');
-    }
+  async getTradeHistory(userId: string, limitCount = 50): Promise<Trade[]> {
+    const { data, error } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limitCount);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(mapTrade);
   }
 
-  // Update portfolio cache in user document
   private async updatePortfolioCache(userId: string): Promise<void> {
     try {
       const portfolio = await this.getPortfolio(userId);
-
-      // Store summary in user document for quick access
-      await updateDoc(doc(db, 'users', userId), {
-        portfolioSummary: {
-          totalValue: portfolio.totalValue,
-          totalProfitLoss: portfolio.totalProfitLoss,
-          totalProfitLossPercentage: portfolio.totalProfitLossPercentage,
-          assetCount: portfolio.assets.length,
-          lastUpdated: serverTimestamp(),
-        }
-      });
+      await supabase
+        .from('profiles')
+        .update({
+          portfolio_summary: {
+            totalValue: portfolio.totalValue,
+            totalProfitLoss: portfolio.totalProfitLoss,
+            totalProfitLossPercentage: portfolio.totalProfitLossPercentage,
+            assetCount: portfolio.assets.length,
+            lastUpdated: new Date().toISOString(),
+          },
+        })
+        .eq('id', userId);
     } catch (error) {
       console.error('Error updating portfolio cache:', error);
     }
   }
 
-  // Get portfolio performance over time
-  async getPortfolioPerformance(userId: string, days: number = 30): Promise<any[]> {
-    try {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - days);
-
-      const tradesQuery = query(
-        collection(db, 'trades'),
-        where('userId', '==', userId),
-        where('timestamp', '>=', startDate),
-        orderBy('timestamp', 'asc')
-      );
-
-      const snapshot = await getDocs(tradesQuery);
-      const trades = snapshot.docs.map(doc => doc.data()) as Trade[];
-
-      // Calculate daily portfolio values
-      const dailyValues: any[] = [];
-      let currentDate = new Date(startDate);
-      let portfolio = await this.getPortfolioAtDate(userId, startDate);
-
-      while (currentDate <= endDate) {
-        // Apply trades for this day
-        const dayTrades = trades.filter(t => {
-          const tradeDate = t.timestamp instanceof Timestamp ? t.timestamp.toDate() : t.timestamp;
-          return tradeDate.toDateString() === currentDate.toDateString();
-        });
-
-        for (const trade of dayTrades) {
-          // Update portfolio based on trade
-          // Implementation would depend on specific requirements
-        }
-
-        dailyValues.push({
-          date: new Date(currentDate),
-          value: portfolio.totalValue,
-          profitLoss: portfolio.totalProfitLoss,
-        });
-
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
-
-      return dailyValues;
-    } catch (error) {
-      console.error('Error getting portfolio performance:', error);
-      throw new Error('Failed to get portfolio performance');
-    }
-  }
-
-  // Get portfolio value at specific date
-  private async getPortfolioAtDate(userId: string, date: Date): Promise<PortfolioSummary> {
-    const tradesQuery = query(
-      collection(db, 'trades'),
-      where('userId', '==', userId),
-      where('timestamp', '<=', date),
-      orderBy('timestamp', 'desc')
-    );
-
-    const snapshot = await getDocs(tradesQuery);
-    const trades = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    })) as Trade[];
-
-    return this.calculatePortfolioFromTrades(trades);
-  }
-
-  // Calculate portfolio statistics
   async getPortfolioStatistics(userId: string): Promise<any> {
-    try {
-      const portfolio = await this.getPortfolio(userId);
-      const trades = await this.getTradeHistory(userId, 100);
-
-      // Calculate statistics
-      const stats = {
-        totalAssets: portfolio.assets.length,
-        totalValue: portfolio.totalValue,
-        totalProfitLoss: portfolio.totalProfitLoss,
-        totalProfitLossPercentage: portfolio.totalProfitLossPercentage,
-        totalTrades: trades.length,
-        winningTrades: 0,
-        losingTrades: 0,
-        averageTradeSize: 0,
-        largestPosition: null as PortfolioAsset | null,
-        bestPerformer: null as PortfolioAsset | null,
-        worstPerformer: null as PortfolioAsset | null,
-      };
-
-      // Find best and worst performers
-      if (portfolio.assets.length > 0) {
-        stats.largestPosition = portfolio.assets.reduce((prev, current) =>
-          (current.currentValue || 0) > (prev.currentValue || 0) ? current : prev
-        );
-
-        stats.bestPerformer = portfolio.assets.reduce((prev, current) =>
-          (current.profitLossPercentage || 0) > (prev.profitLossPercentage || 0) ? current : prev
-        );
-
-        stats.worstPerformer = portfolio.assets.reduce((prev, current) =>
-          (current.profitLossPercentage || 0) < (prev.profitLossPercentage || 0) ? current : prev
-        );
-      }
-
-      // Calculate trade statistics
-      if (trades.length > 0) {
-        const totalTradeValue = trades.reduce((sum, trade) => sum + trade.totalValue, 0);
-        stats.averageTradeSize = totalTradeValue / trades.length;
-      }
-
-      return stats;
-    } catch (error) {
-      console.error('Error calculating portfolio statistics:', error);
-      throw new Error('Failed to calculate portfolio statistics');
+    const portfolio = await this.getPortfolio(userId);
+    const trades = await this.getTradeHistory(userId, 100);
+    const stats = {
+      totalAssets: portfolio.assets.length,
+      totalValue: portfolio.totalValue,
+      totalProfitLoss: portfolio.totalProfitLoss,
+      totalProfitLossPercentage: portfolio.totalProfitLossPercentage,
+      totalTrades: trades.length,
+      averageTradeSize: 0,
+      largestPosition: null as PortfolioAsset | null,
+      bestPerformer: null as PortfolioAsset | null,
+      worstPerformer: null as PortfolioAsset | null,
+    };
+    if (portfolio.assets.length > 0) {
+      stats.largestPosition = portfolio.assets.reduce((p, c) => ((c.currentValue || 0) > (p.currentValue || 0) ? c : p));
+      stats.bestPerformer = portfolio.assets.reduce((p, c) => ((c.profitLossPercentage || 0) > (p.profitLossPercentage || 0) ? c : p));
+      stats.worstPerformer = portfolio.assets.reduce((p, c) => ((c.profitLossPercentage || 0) < (p.profitLossPercentage || 0) ? c : p));
     }
+    if (trades.length > 0) {
+      stats.averageTradeSize = trades.reduce((s, t) => s + t.totalValue, 0) / trades.length;
+    }
+    return stats;
   }
 }
 
