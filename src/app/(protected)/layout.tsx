@@ -1,6 +1,6 @@
 'use client';
 
-import Navigation from '@/components/layout/Navigation';
+import AppShell from '@/components/layout/AppShell';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 
 export default function ProtectedLayout({
@@ -10,10 +10,7 @@ export default function ProtectedLayout({
 }) {
   return (
     <ProtectedRoute>
-      <div className="min-h-screen bg-background">
-        <Navigation />
-        <main>{children}</main>
-      </div>
+      <AppShell>{children}</AppShell>
     </ProtectedRoute>
   );
 }
