@@ -6,6 +6,7 @@ import { SignalReportData } from '@/services/signal-report.service';
 import { getCoinIcon, getCoinName } from '@/lib/coins';
 
 import SignalNarrative from './SignalNarrative';
+import MtfConfirmation from './MtfConfirmation';
 import KeyLevelsPanel from './KeyLevelsPanel';
 import RiskManagementPanel from './RiskManagementPanel';
 import AnalystTake from './AnalystTake';
@@ -104,6 +105,9 @@ export default function SignalReport({
       {showAnalyst && (
         <AnalystTake take={analyst ?? null} loading={!!analystLoading} />
       )}
+
+      {/* Multi-timeframe confirmation */}
+      <MtfConfirmation mtf={report.mtf} horizonLabel={report.horizonLabel} />
 
       {/* Narrative */}
       <SignalNarrative narrative={report.narrative} />

@@ -5,6 +5,9 @@ import { sentimentService } from './sentiment.service';
 import { getCoinProfile, CoinProfile } from './ai/coin-profiles';
 import { computeKeyLevels, KeyLevels } from './ai/levels';
 import { isAiProfiled } from '@/lib/coins';
+import { generateHorizonSignal } from './horizon-signal.service';
+import { getHorizon, DEFAULT_HORIZON } from '@/lib/horizons';
+import type { MtfResult } from './ai/mtf-confirmation';
 import type { Indicators } from '@/components/market/IndicatorPanel';
 
 export interface SignalNarrative {
@@ -26,6 +29,8 @@ export interface SignalReportData {
   riskReward: number;
   potentialGainPct: number;
   potentialLossPct: number;
+  mtf: MtfResult;
+  horizonLabel: string;
 }
 
 function sentimentLabel(v: number): string {
@@ -112,11 +117,13 @@ function buildNarrative(
  * existing signal generator, indicator/regime/sentiment services and the
  * key-levels helper. All heavy lifting is reused; this only orchestrates.
  */
-export async function buildSignalReport(symbol: string): Promise<SignalReportData> {
-  const [signal, candles] = await Promise.all([
-    marketService.generateSignal(symbol),
-    marketService.getCandleData(symbol, '1h', 100),
+export async function buildSignalReport(symbol: string, horizonId: string = DEFAULT_HORIZON): Promise<SignalReportData> {
+  const h = getHorizon(horizonId);
+  const [horizonSignal, candles] = await Promise.all([
+    generateHorizonSignal(symbol, horizonId),
+    marketService.getCandleData(symbol, h.entryTF, Math.max(150, h.limit)),
   ]);
+  const signal = horizonSignal.signal;
 
   const indicators = TechnicalIndicators.prepareIndicators(candles) as Indicators;
   const regime = detectMarketRegime(candles);
@@ -151,5 +158,7 @@ export async function buildSignalReport(symbol: string): Promise<SignalReportDat
     riskReward,
     potentialGainPct,
     potentialLossPct,
+    mtf: horizonSignal.mtf,
+    horizonLabel: horizonSignal.horizonLabel,
   };
 }
