@@ -75,26 +75,41 @@ class NotificationService {
 
   // Realtime subscription (replaces Firestore onSnapshot). Returns an
   // unsubscribe function. Refetches the list on any change for this user.
+  // A unique channel name per call avoids the "cannot add postgres_changes
+  // callbacks after subscribe()" error that occurs when a channel name is
+  // reused, and the whole thing is guarded so a realtime failure can never
+  // crash the app (notifications simply won't be live).
   subscribeToNotifications(userId: string, callback: (notifications: Notification[]) => void): () => void {
     this.getNotifications(userId, 20).then(callback).catch(() => callback([]));
 
-    const channel = supabase
-      .channel(`notifications:${userId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
-        async () => {
-          try {
-            callback(await this.getNotifications(userId, 20));
-          } catch {
-            /* ignore transient errors */
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    try {
+      channel = supabase
+        .channel(`notifications:${userId}:${Date.now()}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+          async () => {
+            try {
+              callback(await this.getNotifications(userId, 20));
+            } catch {
+              /* ignore transient errors */
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+    } catch (e) {
+      console.warn('Realtime notifications unavailable:', e);
+    }
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch {
+          /* ignore */
+        }
+      }
     };
   }
 }
