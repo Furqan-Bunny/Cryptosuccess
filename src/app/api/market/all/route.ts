@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import { SYMBOL_TO_BINANCE, COIN_SUPPLIES } from '@/lib/coins';
+import { rateLimit, clientIp } from '@/lib/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,13 @@ const symbolMap = SYMBOL_TO_BINANCE;
 const supplies = COIN_SUPPLIES;
 
 export async function GET(request: NextRequest) {
+  const rl = await rateLimit('market_all', clientIp(request.headers), 60, 60);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+    );
+  }
   try {
     // Get all symbols in one request
     const symbols = Object.values(symbolMap);
