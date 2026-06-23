@@ -2,6 +2,40 @@ import { CandleData, TradeSignal } from './market.service';
 import { AITrainingService } from './ai/training.service';
 import { getCoinProfile } from './ai/coin-profiles';
 
+// Adjust a raw model confidence by trend strength (ADX) and indicator consensus.
+// Reused by both the default 1h signal and the per-horizon signal builder.
+export function adjustModelConfidence(base: number, action: 'BUY' | 'SELL' | 'HOLD', ind: any): number {
+  let c = Math.min(base, 85);
+  const adx = ind.adx || 0;
+  if (adx < 20) c *= adx / 20;
+
+  const rsi = ind.rsi ?? 50;
+  const macdHist = ind.macd?.histogram ?? 0;
+  const ema50 = ind.ema50 ?? 0;
+  const ema200 = ind.ema200 ?? 0;
+  const stochK = ind.stochastic?.k ?? 50;
+
+  let consensus = 0;
+  if (action === 'BUY') {
+    if (rsi < 70) consensus++;
+    if (macdHist > 0) consensus++;
+    if (ema50 > ema200) consensus++;
+    if (stochK < 80) consensus++;
+    if (adx > 20) consensus++;
+  } else if (action === 'SELL') {
+    if (rsi > 30) consensus++;
+    if (macdHist < 0) consensus++;
+    if (ema50 < ema200) consensus++;
+    if (stochK > 20) consensus++;
+    if (adx > 20) consensus++;
+  }
+  if (consensus <= 1) c *= 0.8;
+  else if (consensus === 2) c *= 0.9;
+  else if (consensus >= 4) c *= 1.05;
+
+  return Math.min(Math.max(c, 5), 85);
+}
+
 class AISignalsService {
   private aiTrainingService: AITrainingService;
 
@@ -104,6 +138,11 @@ class AISignalsService {
     }
   }
 
+  // Per-timeframe model prediction (works on any coin — normalized features).
+  async predict(symbol: string, tf: string, candles?: CandleData[]) {
+    return this.aiTrainingService.generatePrediction(symbol, tf, candles);
+  }
+
   async trainModel(symbol: string): Promise<void> {
     await this.aiTrainingService.trainModel(symbol);
   }
@@ -133,6 +172,9 @@ function getAISignalsService(): AISignalsService {
 export const aiSignalsService = {
   generateAISignal: async (...args: Parameters<AISignalsService['generateAISignal']>) => {
     return getAISignalsService().generateAISignal(...args);
+  },
+  predict: async (...args: Parameters<AISignalsService['predict']>) => {
+    return getAISignalsService().predict(...args);
   },
   trainModel: async (...args: Parameters<AISignalsService['trainModel']>) => {
     return getAISignalsService().trainModel(...args);

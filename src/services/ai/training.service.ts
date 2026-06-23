@@ -1,66 +1,61 @@
 import { CryptoPredictionModel } from './model';
 import { TechnicalIndicators } from './indicators';
-import { marketService } from '../market.service';
+import { marketService, CandleData } from '../market.service';
 
 export class AITrainingService {
-  private model: CryptoPredictionModel;
+  // One model instance per timeframe (1h / 4h / 1d). Lazily created + cached.
+  private models = new Map<string, CryptoPredictionModel>();
 
-  constructor() {
-    this.model = new CryptoPredictionModel();
+  private getModel(tf: string): CryptoPredictionModel {
+    let m = this.models.get(tf);
+    if (!m) {
+      m = new CryptoPredictionModel(tf);
+      this.models.set(tf, m);
+    }
+    return m;
   }
 
-  // Prepare training data with sliding windows and ATR-based labeling
+  // Prepare 1h training data with sliding windows and ATR-based labeling
+  // (used by the in-browser "train your own" flow).
   async prepareTrainingData(symbol: string, days = 30): Promise<{
     windows: number[][][];
     labels: number[][];
   }> {
     const candles = await marketService.getCandleData(symbol, '1h', days * 24);
-
     if (candles.length < 100) {
       throw new Error('Insufficient historical data for training');
     }
 
-    const LOOKBACK = 50; // minimum candles needed for indicators
+    const LOOKBACK = 50;
     const TIMESTEPS = CryptoPredictionModel.TIMESTEPS;
-    const LOOKAHEAD = 24; // evaluate 24 hours later
+    const LOOKAHEAD = 24;
 
-    // Step 1: Compute normalized feature vector for every candle position
     const allFeatures: number[][] = [];
     for (let i = LOOKBACK; i < candles.length; i++) {
       const slice = candles.slice(Math.max(0, i - LOOKBACK), i + 1);
-      const features = TechnicalIndicators.prepareNormalizedFeatures(slice);
-      allFeatures.push(features);
+      allFeatures.push(TechnicalIndicators.prepareNormalizedFeatures(slice));
     }
 
-    // Step 2: Create sliding windows of TIMESTEPS and ATR-based labels
     const windows: number[][][] = [];
     const labels: number[][] = [];
-
     for (let i = TIMESTEPS; i < allFeatures.length - LOOKAHEAD; i++) {
       const window = allFeatures.slice(i - TIMESTEPS, i);
-
-      // Map back to candle index for price comparison
       const candleIdx = i + LOOKBACK;
       const currentPrice = candles[candleIdx].close;
       const futurePrice = candles[candleIdx + LOOKAHEAD].close;
       const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
 
-      // ATR-based labeling threshold
       const sliceForATR = candles.slice(Math.max(0, candleIdx - 50), candleIdx + 1);
       const atrPercent = TechnicalIndicators.calculateATRPercent(
         sliceForATR.map(c => c.high),
         sliceForATR.map(c => c.low),
         sliceForATR.map(c => c.close)
       );
-      const threshold = Math.max(atrPercent, 1); // minimum 1%
+      const threshold = Math.max(atrPercent, 1);
 
-      if (priceChange > threshold) {
-        labels.push([1, 0, 0]); // BUY
-      } else if (priceChange < -threshold) {
-        labels.push([0, 1, 0]); // SELL
-      } else {
-        labels.push([0, 0, 1]); // HOLD
-      }
+      if (priceChange > threshold) labels.push([1, 0, 0]);
+      else if (priceChange < -threshold) labels.push([0, 1, 0]);
+      else labels.push([0, 0, 1]);
 
       windows.push(window);
     }
@@ -69,31 +64,30 @@ export class AITrainingService {
   }
 
   async trainModel(symbol: string): Promise<void> {
-    console.log(`Training LSTM model for ${symbol}...`);
-
+    const model = this.getModel('1h');
     try {
-      await this.model.load();
+      await model.load();
       const { windows, labels } = await this.prepareTrainingData(symbol, 60);
-
       if (windows.length < 50) {
         throw new Error(`Only ${windows.length} training samples — need at least 50`);
       }
-
-      const result = await this.model.train(windows, labels, {
+      const result = await model.train(windows, labels, {
         epochs: 50,
         earlyStoppingPatience: 5,
         validationSplit: 0.2,
       });
-
       console.log(`Training complete: loss=${result.finalLoss.toFixed(4)}, acc=${result.finalAccuracy.toFixed(4)}`);
-      await this.model.save();
+      await model.save();
     } catch (error) {
       console.error(`Error training model for ${symbol}:`, error);
       throw error;
     }
   }
 
-  async generatePrediction(symbol: string): Promise<{
+  // Run a prediction for a coin on a given timeframe. The generalized model for
+  // that timeframe works on ANY coin because features are normalized. Callers
+  // may pass candlesOverride to avoid a second fetch.
+  async generatePrediction(symbol: string, tf: string = '1h', candlesOverride?: CandleData[]): Promise<{
     symbol: string;
     action: 'buy' | 'sell' | 'hold';
     confidence: number;
@@ -105,43 +99,36 @@ export class AITrainingService {
       throw new Error('AI prediction requires browser environment');
     }
 
-    await this.model.load();
-
-    // No trained model yet → don't emit random predictions. Throwing here lets
-    // marketService.generateSignal fall back to the rule-based engine.
-    if (!this.model.hasTrainedModel()) {
+    const model = this.getModel(tf);
+    await model.load();
+    if (!model.hasTrainedModel()) {
       throw new Error('AI model not trained');
     }
 
-    // Get enough candles for indicators (50 lookback) + 24 timestep window
-    const candles = await marketService.getCandleData(symbol, '1h', 100);
     const LOOKBACK = 50;
     const TIMESTEPS = CryptoPredictionModel.TIMESTEPS;
+    const candles = candlesOverride ?? (await marketService.getCandleData(symbol, tf, 150));
+    if (candles.length < LOOKBACK + TIMESTEPS) {
+      throw new Error('Insufficient candles for prediction');
+    }
 
-    // Build feature vectors for the last TIMESTEPS candle positions
     const featureVectors: number[][] = [];
     for (let i = candles.length - TIMESTEPS; i < candles.length; i++) {
       const slice = candles.slice(Math.max(0, i - LOOKBACK), i + 1);
       featureVectors.push(TechnicalIndicators.prepareNormalizedFeatures(slice));
     }
 
-    const prediction = await this.model.predict(featureVectors);
-
-    // Also return traditional indicators for reasoning
+    const prediction = await model.predict(featureVectors);
     const indicators = TechnicalIndicators.prepareIndicators(candles.slice(-50));
 
-    return {
-      symbol,
-      ...prediction,
-      indicators,
-      timestamp: new Date(),
-    };
+    return { symbol, ...prediction, indicators, timestamp: new Date() };
   }
 
-  async hasTrainedModel(): Promise<boolean> {
+  async hasTrainedModel(tf: string = '1h'): Promise<boolean> {
     if (typeof window === 'undefined') return false;
-    await this.model.load();
-    return this.model.hasTrainedModel();
+    const model = this.getModel(tf);
+    await model.load();
+    return model.hasTrainedModel();
   }
 
   async trainAllModels(symbols: string[]): Promise<void> {

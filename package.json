@@ -15,6 +15,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "train:model": "tsx scripts/train-model.ts",
+    "train:models": "tsx scripts/train-models.ts",
     "backtest": "tsx scripts/backtest.ts",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\""
   },

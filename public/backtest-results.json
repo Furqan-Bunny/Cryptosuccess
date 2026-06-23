@@ -24,5 +24,26 @@
       "winRate": 45.8
     }
   },
-  "note": "Walk-forward backtest of the technical engine on 1h candles. Overlapping trades and fees are not modeled. Past performance does not predict future results."
+  "note": "Walk-forward backtest of the technical engine on 1h candles. Overlapping trades and fees are not modeled. Past performance does not predict future results.",
+  "models": {
+    "generatedAt": "2026-06-07T21:15:43.693Z",
+    "coins": 20,
+    "byTimeframe": {
+      "1h": {
+        "winRate": 41.1,
+        "directionalTrades": 9814,
+        "lookahead": 24
+      },
+      "4h": {
+        "winRate": 43.1,
+        "directionalTrades": 6400,
+        "lookahead": 30
+      },
+      "1d": {
+        "winRate": 47.2,
+        "directionalTrades": 2587,
+        "lookahead": 14
+      }
+    }
+  }
 }

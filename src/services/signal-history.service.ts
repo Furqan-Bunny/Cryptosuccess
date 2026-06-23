@@ -74,7 +74,11 @@ class SignalHistoryService {
     if (!row) return;
     const signal = mapRow(row);
 
-    const profitLossPercent = ((currentPrice - signal.entryPrice) / signal.entryPrice) * 100;
+    const rawSpotPercent = ((currentPrice - signal.entryPrice) / signal.entryPrice) * 100;
+    // Store the STRATEGY P/L, not the raw spot move: a SELL (short) profits when
+    // price falls, so the sign is inverted. This makes profit_loss_percent
+    // directionally correct everywhere it's displayed.
+    const profitLossPercent = signal.action === 'SELL' ? -rawSpotPercent : rawSpotPercent;
 
     let outcome: StoredSignal['outcome'];
     if (signal.action === 'BUY') {
@@ -84,7 +88,8 @@ class SignalHistoryService {
     } else if (signal.action === 'SELL') {
       if (currentPrice <= signal.targetPrice) outcome = 'hit_target';
       else if (currentPrice >= signal.stopLoss) outcome = 'hit_stop';
-      else outcome = profitLossPercent <= 0 ? 'expired_profit' : 'expired_loss';
+      // profitLossPercent is already direction-adjusted, so the test matches BUY.
+      else outcome = profitLossPercent >= 0 ? 'expired_profit' : 'expired_loss';
     } else {
       outcome = 'expired_profit';
     }
@@ -132,14 +137,18 @@ class SignalHistoryService {
     total: number; wins: number; losses: number; pending: number; winRate: number;
   }> {
     const signals = await this.getUserSignals(userId, 100);
-    const evaluated = signals.filter(s => s.outcome && s.outcome !== 'pending');
+    // Only directional calls (BUY/SELL) count toward the track record. HOLD is
+    // non-directional and always scores 'expired_profit', so counting it would
+    // inflate the win rate. Exclude it from both numerator and denominator.
+    const directional = signals.filter(s => s.action !== 'HOLD');
+    const evaluated = directional.filter(s => s.outcome && s.outcome !== 'pending');
     const wins = evaluated.filter(s => s.outcome === 'hit_target' || s.outcome === 'expired_profit').length;
     const losses = evaluated.filter(s => s.outcome === 'hit_stop' || s.outcome === 'expired_loss').length;
     return {
-      total: signals.length,
+      total: directional.length,
       wins,
       losses,
-      pending: signals.length - evaluated.length,
+      pending: directional.length - evaluated.length,
       winRate: evaluated.length > 0 ? (wins / evaluated.length) * 100 : 0,
     };
   }
