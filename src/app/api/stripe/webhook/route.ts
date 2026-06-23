@@ -47,8 +47,23 @@ export async function POST(request: NextRequest) {
 
     const db = createServiceClient();
 
-    // Handle the event
-    switch (event.type) {
+    // Idempotency: Stripe retries deliveries. Claim this event id; a retry of an
+    // already-processed event is a no-op.
+    const { error: claimErr } = await db
+      .from('processed_stripe_events')
+      .insert({ event_id: event.id });
+    if (claimErr) {
+      if ((claimErr as any).code === '23505') {
+        return NextResponse.json({ received: true, duplicate: true });
+      }
+      // Non-duplicate error (e.g. table not yet created): log and continue
+      // best-effort rather than dropping the event.
+      console.warn('webhook idempotency claim failed (continuing):', claimErr.message);
+    }
+
+    try {
+      // Handle the event
+      switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
         const userId = session.metadata?.userId || session.client_reference_id;
@@ -74,7 +89,13 @@ export async function POST(request: NextRequest) {
 
       case 'customer.subscription.updated': {
         const subscription = event.data.object as Stripe.Subscription;
-        const userId = subscription.metadata?.userId;
+        let userId = subscription.metadata?.userId;
+        if (!userId) {
+          // Subscriptions created outside our checkout flow have no metadata.userId
+          // — resolve the user by their Stripe customer id instead.
+          const { data } = await db.from('profiles').select('id').eq('customer_id', subscription.customer as string).limit(1);
+          userId = data?.[0]?.id;
+        }
 
         if (userId) {
           const status = subscription.status === 'active' ? 'pro' : 'free';
@@ -92,7 +113,11 @@ export async function POST(request: NextRequest) {
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription;
-        const userId = subscription.metadata?.userId;
+        let userId = subscription.metadata?.userId;
+        if (!userId) {
+          const { data } = await db.from('profiles').select('id').eq('customer_id', subscription.customer as string).limit(1);
+          userId = data?.[0]?.id;
+        }
 
         if (userId) {
           await db
@@ -117,6 +142,12 @@ export async function POST(request: NextRequest) {
 
       default:
         console.log(`Unhandled event type: ${event.type}`);
+      }
+    } catch (handlerErr) {
+      // Processing failed — release the idempotency claim so Stripe's retry can
+      // re-process this event. Re-throw to return a 500 so Stripe retries.
+      await db.from('processed_stripe_events').delete().eq('event_id', event.id);
+      throw handlerErr;
     }
 
     return NextResponse.json({ received: true });

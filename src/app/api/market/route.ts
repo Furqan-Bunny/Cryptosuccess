@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import { SYMBOL_TO_BINANCE, COIN_SUPPLIES } from '@/lib/coins';
+import { rateLimit, clientIp } from '@/lib/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,14 @@ async function binanceGet(path: string, params?: Record<string, string | number>
 const symbolMap = SYMBOL_TO_BINANCE;
 
 export async function GET(request: NextRequest) {
+  // Per-IP backstop on the public market proxy (no-ops if Upstash isn't set).
+  const rl = await rateLimit('market', clientIp(request.headers), 120, 60);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+    );
+  }
   try {
     const searchParams = request.nextUrl.searchParams;
     const symbol = searchParams.get('symbol');

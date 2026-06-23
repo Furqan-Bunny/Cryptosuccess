@@ -108,40 +108,25 @@ class AuthService {
     return profile?.subscription.status === 'pro';
   }
 
-  // Daily signal limit for free users (5/day). Resets lazily at UTC midnight.
+  // Read-only, DISPLAY-ONLY view of the free-tier daily signal allowance (5/day).
+  // The authoritative gate AND the counter mutation live server-side in the
+  // `consume_signal` Postgres RPC, called by /api/ai/analyst. This method never
+  // writes — it just computes what the UI should show, UTC-correct.
   async checkSignalLimit(uid: string): Promise<{ allowed: boolean; remaining: number }> {
     const profile = await this.getUserProfile(uid);
     if (!profile) return { allowed: false, remaining: 0 };
     if (profile.subscription.status === 'pro') return { allowed: true, remaining: -1 };
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const lastReset = new Date(profile.subscription.lastResetDate);
-    lastReset.setHours(0, 0, 0, 0);
+    // UTC calendar-day comparison (matches consume_signal). If the stored reset
+    // date is an earlier UTC day, the allowance has effectively refreshed.
+    const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    const reset = new Date(profile.subscription.lastResetDate);
+    const used = utcDay(new Date()) > utcDay(reset)
+      ? 0
+      : (profile.subscription.signalsUsedToday || 0);
 
-    if (today > lastReset) {
-      await supabase
-        .from('profiles')
-        .update({ signals_used_today: 0, last_reset_date: new Date().toISOString() })
-        .eq('id', uid);
-      return { allowed: true, remaining: 5 };
-    }
-
-    const used = profile.subscription.signalsUsedToday || 0;
     const remaining = Math.max(0, 5 - used);
     return { allowed: remaining > 0, remaining };
-  }
-
-  async incrementSignalUsage(uid: string): Promise<void> {
-    const profile = await this.getUserProfile(uid);
-    if (!profile || profile.subscription.status !== 'free') return;
-    await supabase
-      .from('profiles')
-      .update({
-        signals_used_today: (profile.subscription.signalsUsedToday || 0) + 1,
-        total_signals_viewed: (profile.metadata.totalSignalsViewed || 0) + 1,
-      })
-      .eq('id', uid);
   }
 
   private appUrl(): string {

@@ -21,7 +21,7 @@ export default function SettingsPage() {
     }
     setBillingLoading(true);
     try {
-      await stripeService.redirectToCustomerPortal(customerId);
+      await stripeService.redirectToCustomerPortal();
     } catch (e) {
       console.error('Billing portal error:', e);
       toast.error('Could not open the billing portal. Please try again.');

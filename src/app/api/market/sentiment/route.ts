@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
+import { rateLimit, clientIp } from '@/lib/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  const rl = await rateLimit('sentiment', clientIp(request.headers), 60, 60);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+    );
+  }
   try {
     const searchParams = request.nextUrl.searchParams;
     const limit = searchParams.get('limit') || '1';

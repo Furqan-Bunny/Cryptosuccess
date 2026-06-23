@@ -26,11 +26,18 @@ class StripeService {
   // Create a checkout session
   async createCheckoutSession(data: CheckoutSessionData): Promise<string | null> {
     try {
+      // The server derives the userId from this token, not from the body.
+      const { supabase } = await import('@/lib/supabase/client');
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+
       // Call your API endpoint to create session
       const response = await fetch('/api/stripe/checkout', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(data),
       });
@@ -98,16 +105,22 @@ class StripeService {
     }
   }
 
-  // Create customer portal session
-  async createCustomerPortalSession(customerId: string): Promise<string | null> {
+  // Create customer portal session. The server derives the Stripe customer from
+  // the authenticated session — we only send the access token + return URL.
+  async createCustomerPortalSession(): Promise<string | null> {
     try {
+      const { supabase } = await import('@/lib/supabase/client');
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('Not authenticated');
+
       const response = await fetch('/api/stripe/billing-portal', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          customerId,
           returnUrl: `${window.location.origin}/dashboard`,
         }),
       });
@@ -125,8 +138,8 @@ class StripeService {
   }
 
   // Redirect to customer portal
-  async redirectToCustomerPortal(customerId: string): Promise<void> {
-    const portalUrl = await this.createCustomerPortalSession(customerId);
+  async redirectToCustomerPortal(): Promise<void> {
+    const portalUrl = await this.createCustomerPortalSession();
     if (portalUrl) {
       window.location.href = portalUrl;
     } else {

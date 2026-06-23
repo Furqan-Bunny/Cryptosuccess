@@ -93,18 +93,16 @@ export default function SignalsPage() {
     try {
       const report = await buildSignalReport(symbol, horizon);
 
-      if (user && !isPro) {
-        await authService.incrementSignalUsage(user.uid);
-        await checkSignalLimit();
-      }
-
       setReports(prev => [report, ...prev.filter(r => r.signal.symbol !== symbol)]);
 
       // Fetch the Claude analyst read in the background (automatic per signal).
+      // The daily free-tier limit is consumed server-side inside this call
+      // (atomic + UTC-correct), so refresh the displayed allowance once it settles.
       setAnalyst(prev => ({ ...prev, [symbol]: { loading: true, take: null } }));
       getAnalystTake(report)
         .then(take => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take } })))
-        .catch(() => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take: null } })));
+        .catch(() => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take: null } })))
+        .finally(() => { if (user && !isPro) checkSignalLimit(); });
 
       if (user) {
         try {
