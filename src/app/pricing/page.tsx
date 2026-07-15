@@ -33,6 +33,24 @@ export default function PricingPage() {
     }
   };
 
+  const handleCryptoPay = async () => {
+    if (!user) {
+      toast.error('Please sign in to subscribe');
+      router.push('/login?redirect=/pricing');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { cryptoPayService } = await import('@/services/crypto-pay.service');
+      await cryptoPayService.startCheckout(billingInterval);
+    } catch (error) {
+      console.error('Crypto checkout error:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to start crypto checkout');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Navigation */}
@@ -128,6 +146,7 @@ export default function PricingPage() {
             billingInterval={billingInterval}
             currentPlan={profile?.subscription?.status}
             onSubscribe={handleSubscribe}
+            onCryptoPay={handleCryptoPay}
             isLoading={isLoading}
             popular
           />
@@ -155,7 +174,7 @@ export default function PricingPage() {
             />
             <FAQItem
               question="What payment methods do you accept?"
-              answer="We accept all major credit cards, debit cards, and digital wallets through our secure payment processor, Stripe."
+              answer="We accept all major credit cards, debit cards, and digital wallets through Stripe, plus cryptocurrency via Coinbase Commerce. Crypto payments grant Pro for a fixed period (monthly or yearly) and do not auto-renew."
             />
             <FAQItem
               question="Is there a free trial?"
@@ -177,6 +196,7 @@ function PricingCard({
   billingInterval,
   currentPlan,
   onSubscribe,
+  onCryptoPay,
   isLoading,
   popular = false,
 }: {
@@ -184,6 +204,7 @@ function PricingCard({
   billingInterval: 'monthly' | 'yearly';
   currentPlan?: string;
   onSubscribe: (planId: string) => void;
+  onCryptoPay?: () => void;
   isLoading: boolean;
   popular?: boolean;
 }) {
@@ -239,6 +260,16 @@ function PricingCard({
       >
         {isCurrentPlan ? 'Current Plan' : price === 0 ? 'Get Started' : 'Subscribe'}
       </button>
+
+      {onCryptoPay && price > 0 && !isCurrentPlan && (
+        <button
+          onClick={onCryptoPay}
+          disabled={isLoading}
+          className="w-full mt-3 py-3 font-semibold rounded-lg btn-ghost border border-gray-700 disabled:opacity-50"
+        >
+          Pay with crypto
+        </button>
+      )}
     </div>
   );
 }

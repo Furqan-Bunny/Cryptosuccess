@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { signalHistoryService, StoredSignal } from '@/services/signal-history.service';
 import { marketService } from '@/services/market.service';
-import { FaHistory, FaChartLine } from 'react-icons/fa';
+import { FaHistory, FaChartLine, FaLink } from 'react-icons/fa';
 
 function getOutcomeStyle(outcome?: string) {
   switch (outcome) {
@@ -34,8 +35,8 @@ export default function SignalHistory({ userId }: { userId: string }) {
     let mounted = true;
     async function load() {
       try {
-        // Resolve outcomes for pending signals older than 24h before reading stats.
-        await signalHistoryService.evaluatePendingSignals(userId).catch(() => {});
+        // Outcomes are finalized server-side by the hourly evaluation cron; the
+        // component only reads (no mutate-on-render).
         const [sigs, st] = await Promise.all([
           signalHistoryService.getUserSignals(userId, 20),
           signalHistoryService.getSignalStats(userId),
@@ -124,6 +125,15 @@ export default function SignalHistory({ userId }: { userId: string }) {
                   <span className={`text-sm font-medium ${signal.profitLossPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {signal.profitLossPercent >= 0 ? '+' : ''}{signal.profitLossPercent.toFixed(2)}%
                   </span>
+                )}
+                {signal.id && signal.outcome && signal.outcome !== 'pending' && (
+                  <Link
+                    href={`/verify?signalId=${signal.id}`}
+                    title="Verify this signal on-chain"
+                    className="text-text-secondary hover:text-primary text-xs flex items-center"
+                  >
+                    <FaLink className="mr-1" /> Verify
+                  </Link>
                 )}
               </div>
             </div>

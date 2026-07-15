@@ -3,10 +3,16 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { supabase } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
 import { MarketPrice, marketService } from '@/services/market.service';
 import { COINS, getCoinIcon, getCoinName } from '@/lib/coins';
+import {
+  addToWatchlist,
+  removeFromWatchlist,
+  storedWatchlist,
+  watchlistLimit,
+  WatchlistLimitError,
+} from '@/lib/watchlist';
 import { FaStar, FaPlus, FaTimes, FaSearch } from 'react-icons/fa';
 
 export default function DashboardWatchlist({
@@ -18,36 +24,29 @@ export default function DashboardWatchlist({
   watchlist: string[];
   isPro: boolean;
 }) {
-  const { user, refreshProfile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
   const [showAdd, setShowAdd] = useState(false);
   const [query, setQuery] = useState('');
-  const maxWatchlist = isPro ? 50 : 5;
-
-  const update = async (next: string[]) => {
-    if (!user) return;
-    await supabase.from('profiles').update({ watchlist: next }).eq('id', user.uid);
-    await refreshProfile();
-  };
+  const maxWatchlist = watchlistLimit(isPro);
 
   const addCoin = async (symbol: string) => {
-    if (watchlist.includes(symbol)) return;
-    if (!isPro && watchlist.length >= maxWatchlist) {
-      toast.error(`Free plan tracks up to ${maxWatchlist} coins. Upgrade to Pro for more.`);
-      return;
-    }
+    if (!user) return;
     try {
-      await update([...watchlist, symbol]);
+      await addToWatchlist(user.uid, storedWatchlist(profile), symbol, isPro);
+      await refreshProfile();
       toast.success(`${symbol} added`);
       setShowAdd(false);
       setQuery('');
-    } catch {
-      toast.error('Failed to add coin');
+    } catch (e) {
+      toast.error(e instanceof WatchlistLimitError ? e.message : 'Failed to add coin');
     }
   };
 
   const removeCoin = async (symbol: string) => {
+    if (!user) return;
     try {
-      await update(watchlist.filter(s => s !== symbol));
+      await removeFromWatchlist(user.uid, storedWatchlist(profile), symbol);
+      await refreshProfile();
       toast.success(`${symbol} removed`);
     } catch {
       toast.error('Failed to remove coin');

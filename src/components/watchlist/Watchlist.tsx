@@ -1,12 +1,17 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { marketService } from '@/services/market.service';
-import { authService } from '@/services/auth.service';
+import {
+  addToWatchlist as addWatchlistEntry,
+  removeFromWatchlist as removeWatchlistEntry,
+  storedWatchlist,
+  watchlistLimit,
+  WatchlistLimitError,
+} from '@/lib/watchlist';
 import { FaPlus, FaTimes, FaStar, FaChartLine } from 'react-icons/fa';
-import { supabase } from '@/lib/supabase/client';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 
@@ -40,67 +45,44 @@ interface WatchlistProps {
 
 export default function Watchlist({ onSelectSymbol }: WatchlistProps) {
   const { user, profile, refreshProfile } = useAuth();
-  const [watchlist, setWatchlist] = useState<string[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const isProUser = profile?.subscription?.status === 'pro';
+  const maxWatchlistSize = watchlistLimit(isProUser);
+
+  // The profile is the single source of truth — no duplicated local state to
+  // drift out of sync (the old local copy could be overwritten with stale data
+  // after refreshProfile).
+  const watchlist = useMemo(() => storedWatchlist(profile), [profile]);
 
   const { prices } = useMarketData({
     symbols: watchlist,
     enableRealtime: true,
   });
 
-  // Load watchlist from user profile
-  useEffect(() => {
-    if (profile?.preferences?.watchlist) {
-      setWatchlist(profile.preferences.watchlist);
-    }
-  }, [profile]);
-
-  const isProUser = profile?.subscription?.status === 'pro';
-  const maxWatchlistSize = isProUser ? 50 : 5;
-
   const addToWatchlist = async (symbol: string) => {
-    if (watchlist.includes(symbol)) {
-      toast.error(`${symbol} is already in your watchlist`);
-      return;
-    }
-
-    if (!isProUser && watchlist.length >= maxWatchlistSize) {
-      toast.error(`Free users can only watch up to ${maxWatchlistSize} cryptocurrencies. Upgrade to Pro for unlimited watchlist.`);
-      return;
-    }
-
+    if (!user) return;
     setLoading(true);
     try {
-      const newWatchlist = [...watchlist, symbol];
-
-      if (user) {
-        await supabase.from('profiles').update({ watchlist: newWatchlist }).eq('id', user.uid);
-        await refreshProfile();
-      }
-
-      setWatchlist(newWatchlist);
+      await addWatchlistEntry(user.uid, watchlist, symbol, isProUser);
+      await refreshProfile();
       toast.success(`${symbol} added to watchlist`);
       setShowAddModal(false);
     } catch (error) {
       console.error('Error adding to watchlist:', error);
-      toast.error('Failed to update watchlist');
+      toast.error(error instanceof WatchlistLimitError ? error.message : 'Failed to update watchlist');
     } finally {
       setLoading(false);
     }
   };
 
   const removeFromWatchlist = async (symbol: string) => {
+    if (!user) return;
     setLoading(true);
     try {
-      const newWatchlist = watchlist.filter((s) => s !== symbol);
-
-      if (user) {
-        await supabase.from('profiles').update({ watchlist: newWatchlist }).eq('id', user.uid);
-        await refreshProfile();
-      }
-
-      setWatchlist(newWatchlist);
+      await removeWatchlistEntry(user.uid, watchlist, symbol);
+      await refreshProfile();
       toast.success(`${symbol} removed from watchlist`);
     } catch (error) {
       console.error('Error removing from watchlist:', error);

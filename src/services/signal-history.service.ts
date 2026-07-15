@@ -1,5 +1,4 @@
 import { supabase } from '@/lib/supabase/client';
-import { marketService } from './market.service';
 
 export interface StoredSignal {
   id?: string;
@@ -69,69 +68,10 @@ class SignalHistoryService {
     return (data ?? []).map(mapRow);
   }
 
-  async evaluateSignal(signalId: string, currentPrice: number): Promise<void> {
-    const { data: row } = await supabase.from('signals').select('*').eq('id', signalId).maybeSingle();
-    if (!row) return;
-    const signal = mapRow(row);
-
-    const rawSpotPercent = ((currentPrice - signal.entryPrice) / signal.entryPrice) * 100;
-    // Store the STRATEGY P/L, not the raw spot move: a SELL (short) profits when
-    // price falls, so the sign is inverted. This makes profit_loss_percent
-    // directionally correct everywhere it's displayed.
-    const profitLossPercent = signal.action === 'SELL' ? -rawSpotPercent : rawSpotPercent;
-
-    let outcome: StoredSignal['outcome'];
-    if (signal.action === 'BUY') {
-      if (currentPrice >= signal.targetPrice) outcome = 'hit_target';
-      else if (currentPrice <= signal.stopLoss) outcome = 'hit_stop';
-      else outcome = profitLossPercent >= 0 ? 'expired_profit' : 'expired_loss';
-    } else if (signal.action === 'SELL') {
-      if (currentPrice <= signal.targetPrice) outcome = 'hit_target';
-      else if (currentPrice >= signal.stopLoss) outcome = 'hit_stop';
-      // profitLossPercent is already direction-adjusted, so the test matches BUY.
-      else outcome = profitLossPercent >= 0 ? 'expired_profit' : 'expired_loss';
-    } else {
-      outcome = 'expired_profit';
-    }
-
-    await supabase
-      .from('signals')
-      .update({
-        price_at_24h: currentPrice,
-        profit_loss_percent: profitLossPercent,
-        outcome,
-        evaluated_at: new Date().toISOString(),
-      })
-      .eq('id', signalId);
-  }
-
-  // Evaluate still-pending signals older than 24h (idempotent).
-  async evaluatePendingSignals(userId: string): Promise<void> {
-    const signals = await this.getUserSignals(userId, 100);
-    const DAY = 24 * 60 * 60 * 1000;
-    const now = Date.now();
-
-    const pending = signals.filter(s => {
-      if (s.outcome && s.outcome !== 'pending') return false;
-      const created = new Date(s.createdAt as any).getTime();
-      return now - created >= DAY;
-    });
-
-    const priceCache = new Map<string, number>();
-    for (const s of pending) {
-      if (!s.id) continue;
-      try {
-        let price = priceCache.get(s.symbol);
-        if (price === undefined) {
-          price = (await marketService.getCurrentPrice(s.symbol)).price;
-          priceCache.set(s.symbol, price);
-        }
-        await this.evaluateSignal(s.id, price);
-      } catch (e) {
-        console.error('Failed to evaluate signal', s.id, e);
-      }
-    }
-  }
+  // NOTE: signal evaluation is now server-authoritative and immutable. The
+  // hourly cron `/api/signals/evaluate` (service-role) finalizes pending signals
+  // and the `protect_evaluated_signals` trigger (migration 0004) blocks client
+  // edits — so the browser client no longer evaluates. It only reads/displays.
 
   async getSignalStats(userId: string): Promise<{
     total: number; wins: number; losses: number; pending: number; winRate: number;

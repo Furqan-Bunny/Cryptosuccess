@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import SimDisclaimer from '@/components/shared/SimDisclaimer';
+import LiveTradingCard from '@/components/web3/LiveTradingCard';
 import { useMarketData } from '@/hooks/useMarketData';
 import { tradeExecutionService, Order } from '@/services/trade-execution.service';
 import type { OrderType } from '@/types/trading.types';
@@ -179,6 +180,9 @@ function TradePageInner() {
 
       <div className="container mx-auto px-4 py-8">
         <SimDisclaimer className="mb-6" extra="Conditional orders (stop-loss, take-profit, trailing-stop) are filled automatically by a background engine that runs about once a minute." />
+
+        {/* Opt-in real trading (renders only when enabled). Separate from paper. */}
+        <LiveTradingCard />
 
         {/* Tabs */}
         <div className="flex space-x-6 mb-8 border-b border-gray-800">
