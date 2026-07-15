@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { supabase } from '@/lib/supabase/client';
+import { addToWatchlist, storedWatchlist, WatchlistLimitError } from '@/lib/watchlist';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
@@ -133,22 +133,16 @@ export default function SignalsPage() {
   };
 
   const addCoin = async (symbol: string) => {
-    if (watchlist.includes(symbol)) return;
-    if (!isPro && watchlist.length >= maxWatchlist) {
-      toast.error(`Free plan tracks up to ${maxWatchlist} coins. Upgrade to Pro for more.`);
-      return;
-    }
+    if (!user) return;
     try {
-      if (user) {
-        await supabase.from('profiles').update({ watchlist: [...watchlist, symbol] }).eq('id', user.uid);
-        await refreshProfile();
-      }
+      await addToWatchlist(user.uid, storedWatchlist(profile), symbol, isPro);
+      await refreshProfile();
       toast.success(`${symbol} added to your watchlist`);
       setShowAddModal(false);
       setAddQuery('');
     } catch (e) {
       console.error('Error adding coin:', e);
-      toast.error('Failed to add coin');
+      toast.error(e instanceof WatchlistLimitError ? e.message : 'Failed to add coin');
     }
   };
 
