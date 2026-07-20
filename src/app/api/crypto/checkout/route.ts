@@ -4,20 +4,21 @@ import { SUBSCRIPTION_PLANS } from '@/types/subscription.types';
 
 export const dynamic = 'force-dynamic';
 
-const COMMERCE_API = 'https://api.commerce.coinbase.com/charges';
+// NOWPayments hosted invoice. Non-custodial: settles to our configured wallet, no
+// keys held here. Invoices are ONE-TIME, so a crypto payment grants Pro for a
+// fixed period (monthly/yearly); there is no auto-renew like the Stripe subscription.
+// Set NOWPAYMENTS_API_URL=https://api-sandbox.nowpayments.io/v1 to use the sandbox.
+const API = process.env.NOWPAYMENTS_API_URL || 'https://api.nowpayments.io/v1';
 
-// Coinbase Commerce settles crypto to us (non-custodial — we never hold keys).
-// Charges are ONE-TIME, so a crypto payment grants Pro for a fixed period
-// (monthly/yearly); there's no auto-renew like the Stripe subscription.
 export async function POST(request: NextRequest) {
-  const apiKey = process.env.COINBASE_COMMERCE_API_KEY;
+  const apiKey = process.env.NOWPAYMENTS_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ available: false, reason: 'not_configured' }, { status: 503 });
   }
 
   try {
     // Identity comes from the verified session, NEVER the body — the webhook
-    // trusts metadata.userId to grant Pro, so it must be authentic.
+    // trusts order_id (userId:interval) to grant Pro, so it must be authentic.
     const header = request.headers.get('authorization');
     if (!header?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -34,35 +35,35 @@ export async function POST(request: NextRequest) {
     // Price is server-authoritative (never trust a client-supplied amount).
     const amount = SUBSCRIPTION_PLANS.pro.price[interval];
 
-    const resp = await fetch(COMMERCE_API, {
+    // Public base URL for the IPN callback (must be reachable by NOWPayments).
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
+
+    const resp = await fetch(`${API}/invoice`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CC-Api-Key': apiKey,
-        'X-CC-Version': '2018-03-22',
-      },
+      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: 'CryptoSuccess Pro',
-        description: `Pro subscription (${interval})`,
-        pricing_type: 'fixed_price',
-        local_price: { amount: amount.toFixed(2), currency: 'USD' },
-        metadata: { userId: user.id, billingInterval: interval, plan: 'pro' },
-        redirect_url: redirectUrl,
+        price_amount: amount,
+        price_currency: 'usd',
+        // uuid contains no ':' so this splits cleanly in the webhook.
+        order_id: `${user.id}:${interval}`,
+        order_description: `CryptoSuccess Pro (${interval})`,
+        ipn_callback_url: `${appUrl}/api/crypto/webhook`,
+        success_url: redirectUrl,
         cancel_url: cancelUrl,
       }),
     });
 
     if (!resp.ok) {
-      console.error('Coinbase Commerce charge failed:', resp.status, await resp.text().catch(() => ''));
-      return NextResponse.json({ available: false, reason: 'charge_failed' }, { status: 502 });
+      console.error('NOWPayments invoice failed:', resp.status, await resp.text().catch(() => ''));
+      return NextResponse.json({ available: false, reason: 'invoice_failed' }, { status: 502 });
     }
 
     const json = await resp.json();
-    const url = json?.data?.hosted_url;
+    const url = json?.invoice_url;
     if (!url) {
       return NextResponse.json({ available: false, reason: 'no_url' }, { status: 502 });
     }
-    return NextResponse.json({ url, code: json.data.code });
+    return NextResponse.json({ url, id: json.id });
   } catch (error) {
     console.error('Crypto checkout error:', error);
     return NextResponse.json({ available: false, reason: 'error' }, { status: 500 });
