@@ -5,6 +5,12 @@
 > new to the project can pick up the next task without extra context.
 >
 > Last updated: 2026-07. Working branch: `supabase-migration`.
+>
+> **Live task board:** the full backlog — Epics → Subtasks, priorities, and
+> step-by-step details (What to do / Files / Done when / Reference) — lives in
+> **ClickUp** (Workspace → Team Space → **CryptoSuccess** list). Read the
+> **"START HERE"** task first, then work the **Telegram Bot MVP** epic. This doc is
+> the narrative; ClickUp is the actionable checklist.
 
 ---
 
