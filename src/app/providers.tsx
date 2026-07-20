@@ -3,6 +3,7 @@
 import { ReactNode } from 'react';
 import { AuthProvider } from '@/hooks/useAuth';
 import { Toaster } from 'react-hot-toast';
+import Web3Provider from '@/components/web3/Web3Provider';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -11,7 +12,7 @@ interface ProvidersProps {
 export default function Providers({ children }: ProvidersProps) {
   return (
     <AuthProvider>
-      {children}
+      <Web3Provider>{children}</Web3Provider>
       <Toaster
         position="top-right"
         toastOptions={{
