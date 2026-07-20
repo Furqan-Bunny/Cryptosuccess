@@ -1,13 +1,30 @@
 /**
- * Integration test for the Coinbase Commerce webhook logic (crypto/webhook).
- * DB-free: mirrors the route's pure signature + charge-processing logic and
- * exercises the REAL HMAC scheme so the signature contract can't silently change.
+ * Integration test for the NOWPayments IPN webhook logic (crypto/webhook).
+ * DB-free: mirrors the route's pure signature + payment-processing logic and
+ * exercises the REAL HMAC-SHA512 sorted-JSON scheme so it can't silently change.
  */
 import { createHmac, timingSafeEqual } from 'crypto';
 
-// Mirrors the constant-time HMAC check in crypto/webhook/route.ts.
-function verifySignature(body: string, signature: string, secret: string): boolean {
-  const expected = createHmac('sha256', secret).update(body).digest('hex');
+// Mirrors sortObject + signature check in crypto/webhook/route.ts.
+function sortObject(obj: any): any {
+  if (Array.isArray(obj)) return obj.map(sortObject);
+  if (obj && typeof obj === 'object') {
+    return Object.keys(obj)
+      .sort()
+      .reduce((acc: Record<string, any>, key) => {
+        acc[key] = sortObject(obj[key]);
+        return acc;
+      }, {});
+  }
+  return obj;
+}
+
+function sign(body: object, secret: string): string {
+  return createHmac('sha512', secret).update(JSON.stringify(sortObject(body))).digest('hex');
+}
+
+function verify(body: object, signature: string, secret: string): boolean {
+  const expected = sign(body, secret);
   const a = Buffer.from(signature);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -15,85 +32,73 @@ function verifySignature(body: string, signature: string, secret: string): boole
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Mirrors the charge handler: only confirmed/resolved grant Pro; interval decides
-// the fixed period; identity comes from metadata.userId.
-function processCharge(event: any) {
-  if (event.type !== 'charge:confirmed' && event.type !== 'charge:resolved') return null;
-  const md = event.data?.metadata ?? {};
-  const userId = md.userId;
+// Mirrors the payment handler: only finished/confirmed grant Pro; interval + user
+// come from order_id = `${userId}:${interval}`.
+function processPayment(payload: any) {
+  const status = payload.payment_status;
+  if (status !== 'finished' && status !== 'confirmed') return null;
+  const orderId = String(payload.order_id ?? '');
+  const sep = orderId.indexOf(':');
+  const userId = sep > 0 ? orderId.slice(0, sep) : '';
   if (!userId) return null;
-  const interval = md.billingInterval === 'yearly' ? 'yearly' : 'monthly';
-  const days = interval === 'yearly' ? 365 : 30;
-  return {
-    userId,
-    status: 'pro',
-    planId: `crypto_${interval}`,
-    periodDays: days,
-  };
+  const interval = orderId.slice(sep + 1) === 'yearly' ? 'yearly' : 'monthly';
+  return { userId, status: 'pro', planId: `crypto_${interval}`, periodDays: interval === 'yearly' ? 365 : 30 };
 }
 
-const SECRET = 'test_shared_secret';
+const SECRET = 'test_ipn_secret';
 
-describe('crypto webhook signature', () => {
-  const body = JSON.stringify({ event: { id: 'evt_1', type: 'charge:confirmed' } });
+describe('NOWPayments IPN signature', () => {
+  const body = { payment_id: 123, payment_status: 'finished', order_id: 'u1:monthly', price_amount: 19 };
 
-  it('accepts a correctly-signed body', () => {
-    const sig = createHmac('sha256', SECRET).update(body).digest('hex');
-    expect(verifySignature(body, sig, SECRET)).toBe(true);
+  it('accepts a correctly-signed body regardless of key order', () => {
+    const sig = sign(body, SECRET);
+    // Reordered keys must still verify (signature is over sorted keys).
+    const reordered = { order_id: 'u1:monthly', price_amount: 19, payment_status: 'finished', payment_id: 123 };
+    expect(verify(reordered, sig, SECRET)).toBe(true);
   });
 
   it('rejects a tampered body', () => {
-    const sig = createHmac('sha256', SECRET).update(body).digest('hex');
-    expect(verifySignature(body + ' ', sig, SECRET)).toBe(false);
+    const sig = sign(body, SECRET);
+    expect(verify({ ...body, order_id: 'attacker:yearly' }, sig, SECRET)).toBe(false);
   });
 
   it('rejects a wrong secret', () => {
-    const sig = createHmac('sha256', 'other_secret').update(body).digest('hex');
-    expect(verifySignature(body, sig, SECRET)).toBe(false);
-  });
-
-  it('rejects a malformed signature (length mismatch safe)', () => {
-    expect(verifySignature(body, 'deadbeef', SECRET)).toBe(false);
+    const sig = sign(body, 'other');
+    expect(verify(body, sig, SECRET)).toBe(false);
   });
 });
 
-describe('crypto webhook charge processing', () => {
-  it('grants monthly Pro on charge:confirmed', () => {
-    const r = processCharge({
-      type: 'charge:confirmed',
-      data: { metadata: { userId: 'u1', billingInterval: 'monthly', plan: 'pro' } },
-    });
-    expect(r).not.toBeNull();
-    expect(r!.userId).toBe('u1');
-    expect(r!.status).toBe('pro');
-    expect(r!.planId).toBe('crypto_monthly');
-    expect(r!.periodDays).toBe(30);
+describe('NOWPayments payment processing', () => {
+  it('grants monthly Pro on finished', () => {
+    const r = processPayment({ payment_status: 'finished', order_id: 'u1:monthly' });
+    expect(r).toEqual({ userId: 'u1', status: 'pro', planId: 'crypto_monthly', periodDays: 30 });
   });
 
-  it('grants yearly Pro on charge:resolved', () => {
-    const r = processCharge({
-      type: 'charge:resolved',
-      data: { metadata: { userId: 'u2', billingInterval: 'yearly' } },
-    });
+  it('grants yearly Pro on confirmed', () => {
+    const r = processPayment({ payment_status: 'confirmed', order_id: 'u2:yearly' });
     expect(r!.planId).toBe('crypto_yearly');
     expect(r!.periodDays).toBe(365);
   });
 
-  it('ignores non-completed events', () => {
-    expect(processCharge({ type: 'charge:created', data: { metadata: { userId: 'u1' } } })).toBeNull();
-    expect(processCharge({ type: 'charge:failed', data: { metadata: { userId: 'u1' } } })).toBeNull();
+  it('handles a uuid userId (contains no colon)', () => {
+    const uid = 'd63b521b-22c9-41f0-88d4-acaf9f209434';
+    const r = processPayment({ payment_status: 'finished', order_id: `${uid}:yearly` });
+    expect(r!.userId).toBe(uid);
+    expect(r!.planId).toBe('crypto_yearly');
   });
 
-  it('ignores a charge with no userId', () => {
-    expect(processCharge({ type: 'charge:confirmed', data: { metadata: {} } })).toBeNull();
+  it('ignores non-terminal statuses', () => {
+    for (const s of ['waiting', 'confirming', 'sending', 'partially_paid', 'failed', 'expired']) {
+      expect(processPayment({ payment_status: s, order_id: 'u1:monthly' })).toBeNull();
+    }
+  });
+
+  it('ignores a payment with no userId', () => {
+    expect(processPayment({ payment_status: 'finished', order_id: '' })).toBeNull();
   });
 
   it('computes a period end in the future', () => {
-    const r = processCharge({
-      type: 'charge:confirmed',
-      data: { metadata: { userId: 'u1', billingInterval: 'monthly' } },
-    })!;
-    const end = Date.now() + r.periodDays * DAY_MS;
-    expect(end).toBeGreaterThan(Date.now());
+    const r = processPayment({ payment_status: 'finished', order_id: 'u1:monthly' })!;
+    expect(Date.now() + r.periodDays * DAY_MS).toBeGreaterThan(Date.now());
   });
 });
