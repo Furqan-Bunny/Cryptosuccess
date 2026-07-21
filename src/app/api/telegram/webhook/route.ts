@@ -12,9 +12,16 @@ import {
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // signal generation (news + reasoning) needs headroom
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-const VERIFY_URL = `${APP_URL}/verify`;
-const PRICING_URL = `${APP_URL}/pricing`;
+// Public base URL for links in messages (/verify, /pricing). Prefer an explicit
+// NEXT_PUBLIC_APP_URL, but fall back to the deployment host from the request so
+// it "just works" on Vercel without any env config.
+function baseUrl(request: NextRequest): string {
+  const env = process.env.NEXT_PUBLIC_APP_URL;
+  if (env && !/localhost/.test(env)) return env.replace(/\/$/, '');
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  return host ? `${proto}://${host}` : (env || 'http://localhost:3000');
+}
 
 // Is Supabase pointed at a real project (not a placeholder / example value)?
 // When it isn't, DB calls would hang trying to reach a bogus host and stall the
@@ -75,8 +82,9 @@ export async function POST(request: NextRequest) {
     })();
   }
 
+  const base = baseUrl(request);
   try {
-    await route(text, chatId, db);
+    await route(text, chatId, db, base);
   } catch (e) {
     console.error('telegram handler error:', e);
     try { await sendMessage(chatId, errorMessage()); } catch {}
@@ -88,36 +96,36 @@ type Db = ReturnType<typeof createServiceClient> | null;
 
 const NOT_CONFIGURED = "⚙️ This feature isn't live yet — the signal backend (database + AI) is still being set up. Try /verify or /start for now.";
 
-async function route(text: string, chatId: number, db: Db): Promise<void> {
+async function route(text: string, chatId: number, db: Db, base: string): Promise<void> {
   const [rawCmd, ...rest] = text.split(/\s+/);
   const cmd = rawCmd.toLowerCase().replace(/@.*$/, ''); // strip @botname suffix in groups
   const arg = rest.join(' ').trim();
 
   switch (cmd) {
     case '/start':
-      return sendMessage(chatId, welcomeMessage(VERIFY_URL));
+      return sendMessage(chatId, welcomeMessage(`${base}/verify`));
     case '/help':
       return sendMessage(chatId, helpMessage());
     case '/verify':
-      return sendMessage(chatId, verifyMessage(VERIFY_URL));
+      return sendMessage(chatId, verifyMessage(`${base}/verify`));
     case '/subscribe':
-      return sendMessage(chatId, subscribeMessage(PRICING_URL));
+      return sendMessage(chatId, subscribeMessage(`${base}/pricing`));
     case '/link':
-      return handleLink(chatId, arg, db);
+      return handleLink(chatId, arg, db, base);
     case '/signal':
-      return handleSignal(chatId, arg, db);
+      return handleSignal(chatId, arg, db, base);
     default:
       if (cmd.startsWith('/')) return sendMessage(chatId, helpMessage());
       // Bare text with no command: treat a single token as a coin symbol.
-      if (/^[a-z0-9]{2,6}$/i.test(text)) return handleSignal(chatId, text, db);
+      if (/^[a-z0-9]{2,6}$/i.test(text)) return handleSignal(chatId, text, db, base);
       return sendMessage(chatId, helpMessage());
   }
 }
 
-async function handleLink(chatId: number, arg: string, db: Db): Promise<void> {
+async function handleLink(chatId: number, arg: string, db: Db, base: string): Promise<void> {
   if (!db) return sendMessage(chatId, NOT_CONFIGURED);
   const code = arg.trim();
-  if (!code) return sendMessage(chatId, linkHelpMessage(APP_URL));
+  if (!code) return sendMessage(chatId, linkHelpMessage(base));
   try {
     const { data, error } = await db.rpc('redeem_telegram_link', { p_telegram_id: chatId, p_code: code });
     if (error) throw error;
@@ -129,7 +137,7 @@ async function handleLink(chatId: number, arg: string, db: Db): Promise<void> {
   }
 }
 
-async function handleSignal(chatId: number, arg: string, db: Db): Promise<void> {
+async function handleSignal(chatId: number, arg: string, db: Db, base: string): Promise<void> {
   const symbol = arg.replace(/[^a-z0-9]/gi, '').toUpperCase();
   if (!symbol) return sendMessage(chatId, usageMessage());
   if (!isSupportedCoin(symbol)) return sendMessage(chatId, unsupportedCoinMessage(symbol));
@@ -145,7 +153,7 @@ async function handleSignal(chatId: number, arg: string, db: Db): Promise<void> 
   try {
     const { data: gate, error } = await db.rpc('consume_telegram_signal', { p_telegram_id: chatId });
     if (error) throw error;
-    if (!gate?.allowed) return sendMessage(chatId, limitReachedMessage(PRICING_URL));
+    if (!gate?.allowed) return sendMessage(chatId, limitReachedMessage(`${base}/pricing`));
     remaining = typeof gate.remaining === 'number' ? gate.remaining : -1;
   } catch (e) {
     console.error('consume_telegram_signal failed (denying):', e);
@@ -162,7 +170,7 @@ async function handleSignal(chatId: number, arg: string, db: Db): Promise<void> 
     symbol,
     analysis: result.analysis,
     price: result.price,
-    verifyUrl: VERIFY_URL,
+    verifyUrl: `${base}/verify`,
     remaining,
   }));
 }
