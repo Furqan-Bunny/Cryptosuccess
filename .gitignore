@@ -79,3 +79,4 @@ __tests__/coverage/
 /cache/
 /broadcast/
 foundry.lock
+.env*
