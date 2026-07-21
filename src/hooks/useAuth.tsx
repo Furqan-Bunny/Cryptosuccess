@@ -6,6 +6,7 @@ import { authService, toAppUser } from '@/services/auth.service';
 import { User, UserProfile } from '@/types/user.types';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
+import { DEV_AUTH_BYPASS, MOCK_USER, MOCK_PROFILE } from '@/lib/dev/dev-auth';
 
 interface AuthContextType {
   user: User | null;
@@ -37,6 +38,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // DEV-ONLY: skip Supabase and hand every page a mock Pro session. Gated by
+    // NEXT_PUBLIC_DEV_AUTH_BYPASS — see src/lib/dev/dev-auth.ts.
+    if (DEV_AUTH_BYPASS) {
+      console.warn('[dev-auth] Login bypass is ON — using a mock Pro user. Do NOT enable in production.');
+      setUser(MOCK_USER);
+      setProfile(MOCK_PROFILE);
+      setLoading(false);
+      return;
+    }
+
     // onAuthStateChange fires an INITIAL_SESSION event on subscribe, so this
     // also covers the initial load.
     const {
@@ -103,6 +114,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    // In bypass mode there's no real session to end — just go home.
+    if (DEV_AUTH_BYPASS) {
+      toast.success('Signed out (dev bypass)');
+      router.push('/');
+      return;
+    }
     try {
       setLoading(true);
       await authService.signOut();
