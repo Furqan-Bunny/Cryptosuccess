@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { sendMessage } from '@/lib/telegram/api';
-import { generateAnalystTake } from '@/services/analyst.service';
+import { sendMessage, secretsMatch } from '@/lib/telegram/api';
+import { generateAnalystTake, type AnalystTake } from '@/services/analyst.service';
+import { buildSignalRecord } from '@/services/telegram/record';
+import { fetchSpotPrice } from '@/lib/server/binance-server';
 import { isSupportedCoin } from '@/lib/coins';
 import {
   formatSignal, welcomeMessage, helpMessage, verifyMessage, subscribeMessage,
@@ -49,7 +51,7 @@ export async function POST(request: NextRequest) {
     console.warn('Telegram webhook hit but bot not configured');
     return ack();
   }
-  if (request.headers.get('x-telegram-bot-api-secret-token') !== secret) {
+  if (!secretsMatch(request.headers.get('x-telegram-bot-api-secret-token'), secret)) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 
@@ -166,11 +168,60 @@ async function handleSignal(chatId: number, arg: string, db: Db, base: string): 
   const result = await generateAnalystTake(symbol, db);
   if (!result) return sendMessage(chatId, errorMessage());
 
+  const recorded = await recordSignal(db, chatId, symbol, result.analysis);
+
   return sendMessage(chatId, formatSignal({
     symbol,
     analysis: result.analysis,
-    price: result.price,
+    price: recorded?.price ?? result.price,
     verifyUrl: `${base}/verify`,
     remaining,
+    recordedSignalId: recorded?.id ?? null,
   }));
+}
+
+// Record a linked chat's call in `signals` so it is server-scored and anchored
+// like a web signal. `signals.user_id` is required, so unlinked chats can't be
+// recorded — the message then says so. Best-effort: never blocks the reply.
+async function recordSignal(
+  db: NonNullable<Db>,
+  chatId: number,
+  symbol: string,
+  analysis: AnalystTake,
+): Promise<{ id: string; price: number } | null> {
+  try {
+    const { data: tu } = await db
+      .from('telegram_users')
+      .select('user_id')
+      .eq('telegram_id', chatId)
+      .maybeSingle();
+    if (!tu?.user_id) return null;
+
+    const price = await fetchSpotPrice(symbol);
+    if (price == null) return null;
+
+    const rec = buildSignalRecord(analysis, price);
+    if (!rec) return null;
+
+    const { data, error } = await db
+      .from('signals')
+      .insert({
+        user_id: tu.user_id,
+        symbol,
+        action: rec.action,
+        confidence: rec.confidence,
+        entry_price: rec.entryPrice,
+        target_price: rec.targetPrice,
+        stop_loss: rec.stopLoss,
+        reasoning: rec.reasoning,
+        outcome: 'pending',
+      })
+      .select('id')
+      .single();
+    if (error) throw error;
+    return { id: data.id as string, price };
+  } catch (e) {
+    console.warn('recording telegram signal failed (reply still sent):', e);
+    return null;
+  }
 }

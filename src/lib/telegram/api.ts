@@ -1,6 +1,15 @@
 // Minimal Telegram Bot API client (server-only). Uses plain `fetch` — no SDK.
 // The bot token is a secret and must never be exposed to the browser.
+import { timingSafeEqual } from 'crypto';
+
 const API_BASE = 'https://api.telegram.org';
+
+/** Constant-time comparison of a caller-supplied secret against the expected one. */
+export function secretsMatch(provided: string | null | undefined, expected: string): boolean {
+  const a = Buffer.from(provided ?? '');
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export function getBotToken(): string | null {
   return process.env.TELEGRAM_BOT_TOKEN || null;

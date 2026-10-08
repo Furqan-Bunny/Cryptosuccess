@@ -22,13 +22,17 @@ coach." Built on top of the existing signal engine (§3), nothing in §3 was rew
 | `src/app/api/telegram/link/route.ts` | Mints an account-link code |
 | `src/app/api/telegram/setup/route.ts` | Self-registers the webhook on deploy (see below) |
 | `supabase/migrations/0007_telegram_users.sql` | `telegram_users`, link codes, `consume_telegram_signal` (Free 5/day, linked-Pro unlimited), `redeem_telegram_link` |
+| `supabase/migrations/0008_telegram_shared_quota.sql` | Linked chats share the account's web allowance (`consume_signal`) instead of a second 5/day bucket |
+| `src/services/telegram/record.ts` | Turns a linked chat's read into a `signals` row (fresh live entry, parsed + direction-checked levels) so it is scored and anchored like web signals |
+| `src/components/settings/TelegramLinkCard.tsx` | Settings → Telegram: mints the one-time `/link` code |
+| `.github/workflows/scheduler.yml` | Hourly engine tick + signal evaluation (Hobby crons are daily-only) |
 | `scripts/set-telegram-webhook.ts` | Alternative CLI webhook registration |
 | `tests/unit/telegram-format.test.ts` | 11 tests locking the honest-coach guardrails |
-| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0007 combined for one paste |
+| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0008 combined for one paste (generated) |
 
 ## To make `/signal` work (for the reviewer deploying to the real project)
 1. **Supabase** — create a project; in the SQL Editor run `supabase/ALL_MIGRATIONS.sql`
-   (migrations 0001→0007). Copy the Project URL, `anon` key, and `service_role` key.
+   (migrations 0001→0008). If 0001→0007 are already applied, run only `0008_telegram_shared_quota.sql`. Copy the Project URL, `anon` key, and `service_role` key.
 2. **Anthropic** — create an API key (`sk-ant-…`) with a little billing credit.
 3. **Set env vars** (Vercel → Project → Settings → Environment Variables), then redeploy:
    - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (already set on the demo deploy)
@@ -38,14 +42,17 @@ coach." Built on top of the existing signal engine (§3), nothing in §3 was rew
    `https://<your-domain>/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>`
 5. Test in Telegram: `/start`, then `/signal BTC`.
 
-> Note: `vercel.json` crons are set to **daily** for Hobby. For responsive auto
-> stop-loss, restore frequent schedules on Vercel Pro or an external scheduler
-> (see docs/HANDOVER.md §4.4). Model IDs in `analyst.service.ts` were carried over
+> Note: `vercel.json` crons are set to **daily** for Hobby. `.github/workflows/scheduler.yml`
+> calls `/api/engine/tick` + `/api/signals/evaluate` **hourly** (set repo secrets `APP_URL`
+> and `CRON_SECRET`). For near-real-time stop-losses, also point cron-job.org (or Vercel Pro)
+> at `/api/engine/tick` every 1–2 min with `Authorization: Bearer <CRON_SECRET>`. Model IDs in `analyst.service.ts` were carried over
 > from the existing `/api/ai/analyst` route — confirm they match the current
 > Anthropic model IDs before go-live.
 
 ## Product principles enforced (never break)
-Provably honest (on-chain `/verify` hook on every signal), honest about uncertainty
+Provably honest — only calls actually written to `signals` (linked chats with parseable,
+direction-consistent levels) claim on-chain recording; every other reply says plainly that it
+is NOT recorded, honest about uncertainty
 (explicit "stay out" on low conviction), risk-first (stop-loss + max loss on every
 call), teaches, personalized, never "guaranteed/100x". These are locked by
 `tests/unit/telegram-format.test.ts`.
