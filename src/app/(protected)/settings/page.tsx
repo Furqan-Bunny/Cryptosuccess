@@ -6,6 +6,7 @@ import { FaUser, FaBell, FaCrown, FaCreditCard, FaShieldAlt } from 'react-icons/
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { stripeService } from '@/services/stripe.service';
+import TelegramLinkCard from '@/components/settings/TelegramLinkCard';
 
 export default function SettingsPage() {
   const { user, profile } = useAuth();
@@ -134,6 +135,8 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+
+        <TelegramLinkCard />
 
         {/* Notifications Section */}
         <div className="card p-6 mb-6">
