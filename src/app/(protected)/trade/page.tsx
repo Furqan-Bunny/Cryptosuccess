@@ -179,7 +179,7 @@ function TradePageInner() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
-        <SimDisclaimer className="mb-6" extra="Conditional orders (stop-loss, take-profit, trailing-stop) are filled automatically by a background engine that runs about once a minute." />
+        <SimDisclaimer className="mb-6" extra="Conditional orders (stop-loss, take-profit, trailing-stop) are filled automatically by a background engine that runs on a schedule, so fills are not instant and can happen after the price has moved past your trigger." />
 
         {/* Opt-in real trading (renders only when enabled). Separate from paper. */}
         <LiveTradingCard />
@@ -448,7 +448,7 @@ function TradePageInner() {
                 {orderType === 'stop-loss' && (
                   <p className="text-text-secondary">
                     Stop-loss orders limit losses by automatically selling when price drops to your
-                    stop price. The engine checks open orders every minute and fills them automatically.
+                    stop price. A scheduled background engine checks open orders and fills them automatically.
                   </p>
                 )}
                 {orderType === 'take-profit' && (

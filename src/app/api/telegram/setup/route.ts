@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { secretsMatch } from '@/lib/telegram/api';
 
 // One-shot, self-service webhook registration for the DEPLOYED bot. After
 // deploying to Vercel (with TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET set),
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
 
   // Guard: caller must know the webhook secret.
   const key = new URL(request.url).searchParams.get('key');
-  if (key !== secret) {
+  if (!secretsMatch(key, secret)) {
     return NextResponse.json(
       { ok: false, error: 'Unauthorized. Append ?key=<TELEGRAM_WEBHOOK_SECRET> to this URL.' },
       { status: 401 },

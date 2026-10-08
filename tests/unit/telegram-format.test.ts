@@ -6,7 +6,8 @@ import {
   formatSignal, welcomeMessage, helpMessage, verifyMessage,
   parseFirstNumber, parseRangeMid, BANNED_PHRASES,
 } from '@/services/telegram/format';
-import { splitForTelegram } from '@/lib/telegram/api';
+import { splitForTelegram, secretsMatch } from '@/lib/telegram/api';
+import { buildSignalRecord } from '@/services/telegram/record';
 import type { AnalystTake } from '@/services/analyst.service';
 
 const VERIFY = 'https://app.example.com/verify';
@@ -118,5 +119,62 @@ describe('splitForTelegram', () => {
     expect(chunks.length).toBeGreaterThan(1);
     chunks.forEach(c => expect(c.length).toBeLessThanOrEqual(4096));
     expect(chunks.join('\n')).toBe(long);
+  });
+});
+
+describe('formatSignal — on-chain claim matches what was recorded', () => {
+  it('claims on-chain recording only when the call was recorded, linking that signal', () => {
+    const msg = formatSignal({ symbol: 'ETH', analysis: take(), verifyUrl: VERIFY, recordedSignalId: 'sig-123' });
+    expect(msg).toContain(`${VERIFY}?signalId=sig-123`);
+    expect(msg.toLowerCase()).toContain('anchored on-chain');
+  });
+
+  it('says plainly when a call is NOT recorded', () => {
+    for (const id of [undefined, null]) {
+      const msg = formatSignal({ symbol: 'ETH', analysis: take(), verifyUrl: VERIFY, recordedSignalId: id });
+      expect(msg).toMatch(/NOT recorded/);
+      expect(msg).not.toMatch(/can't hide it|anchored on-chain/i);
+    }
+  });
+});
+
+describe('buildSignalRecord', () => {
+  it('records a coherent BUY at the live price with parsed levels', () => {
+    const rec = buildSignalRecord(take(), 2010);
+    expect(rec).toMatchObject({ action: 'BUY', entryPrice: 2010, targetPrice: 2200, stopLoss: 1940, confidence: 55 });
+  });
+
+  it('records a coherent SELL', () => {
+    const t = take({ shortTerm: { ...take().shortTerm, verdict: 'SELL', target: '$1,800', stop: '$2,100' } });
+    expect(buildSignalRecord(t, 2000)).toMatchObject({ action: 'SELL', targetPrice: 1800, stopLoss: 2100 });
+  });
+
+  it('refuses levels that contradict the direction at the live price', () => {
+    // Price already ran past the target since the (possibly cached) read.
+    expect(buildSignalRecord(take(), 2300)).toBeNull();
+    const t = take({ shortTerm: { ...take().shortTerm, verdict: 'SELL' } }); // target above price
+    expect(buildSignalRecord(t, 2010)).toBeNull();
+  });
+
+  it('refuses unparseable levels and bad prices', () => {
+    const t = take({ shortTerm: { ...take().shortTerm, target: 'n/a' } });
+    expect(buildSignalRecord(t, 2010)).toBeNull();
+    expect(buildSignalRecord(take(), 0)).toBeNull();
+    expect(buildSignalRecord(take(), NaN)).toBeNull();
+  });
+
+  it('records HOLD as a neutral flat call', () => {
+    const t = take({ shortTerm: { ...take().shortTerm, verdict: 'HOLD', conviction: 'low' } });
+    expect(buildSignalRecord(t, 2010)).toMatchObject({ action: 'HOLD', entryPrice: 2010, targetPrice: 2010, stopLoss: 2010, confidence: 40 });
+  });
+});
+
+describe('secretsMatch', () => {
+  it('matches only the exact secret', () => {
+    expect(secretsMatch('s3cret', 's3cret')).toBe(true);
+    expect(secretsMatch('s3creT', 's3cret')).toBe(false);
+    expect(secretsMatch('s3cret-longer', 's3cret')).toBe(false);
+    expect(secretsMatch(null, 's3cret')).toBe(false);
+    expect(secretsMatch(undefined, 's3cret')).toBe(false);
   });
 });

@@ -60,8 +60,12 @@ export function formatSignal(params: {
   price?: number | null;
   verifyUrl: string;
   remaining?: number; // free signals left today (-1 = unlimited/Pro)
+  // Id of the `signals` row this call was recorded as, or null when it was NOT
+  // recorded (unlinked chat / unparseable levels). Only recorded calls are
+  // scored and anchored on-chain, so the message must never claim otherwise.
+  recordedSignalId?: string | null;
 }): string {
-  const { symbol, analysis, price, verifyUrl, remaining } = params;
+  const { symbol, analysis, price, verifyUrl, remaining, recordedSignalId } = params;
   const name = getCoinName(symbol);
   const st = analysis.shortTerm;
   const emoji = VERDICT_EMOJI[st.verdict] ?? '⚪';
@@ -108,8 +112,12 @@ export function formatSignal(params: {
   lines.push(`🗓️ Longer-term (${analysis.longTerm.horizon}): ${analysis.longTerm.verdict} — ${truncate(analysis.longTerm.thesis, 220)}`);
   lines.push('');
 
-  // Provably-honest hook — our edge.
-  lines.push(`🔗 We can't hide losing calls: verify our track record on-chain → ${verifyUrl}`);
+  // Provably-honest hook — only claim on-chain recording for calls we actually recorded.
+  if (recordedSignalId) {
+    lines.push(`🔗 This call is recorded in our track record. After it's scored (24h) it is anchored on-chain, so we can't hide it if it loses → ${verifyUrl}?signalId=${recordedSignalId}`);
+  } else {
+    lines.push(`ℹ️ This read is NOT recorded in our track record. Link your account with /link so your calls are recorded and verifiable. Our verified track record → ${verifyUrl}`);
+  }
 
   if (remaining != null && remaining >= 0) {
     lines.push('');
@@ -177,15 +185,15 @@ export function subscribeMessage(pricingUrl: string): string {
 }
 
 export function linkSuccessMessage(): string {
-  return '✅ Account linked. Pro perks (if any) now apply to your Telegram signals. Run /signal BTC to try it.';
+  return '✅ Account linked. Your signals now count against your account plan (shared with the website) and are recorded in our verifiable track record. Run /signal BTC to try it.';
 }
 
 export function linkHelpMessage(appUrl: string): string {
   return [
     'To connect your CryptoSuccess account:',
-    `1. Sign in at ${appUrl} and open your account settings.`,
-    '2. Generate a Telegram link code.',
-    '3. Send it here: /link <code>',
+    `1. Sign in at ${appUrl}/settings`,
+    '2. Under "Telegram", press "Generate link code".',
+    '3. Send it here within 15 minutes: /link <code>',
   ].join('\n');
 }
 
