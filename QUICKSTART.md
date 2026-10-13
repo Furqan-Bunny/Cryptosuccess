@@ -103,4 +103,4 @@ You now have a working authentication system with:
 - Protected routes
 - Subscription tracking foundation
 
-The next epic (Market Data Integration) is ready to be implemented following the BMad methodology!
+The next epic (Market Data Integration) is ready to be implemented next in the roadmap!

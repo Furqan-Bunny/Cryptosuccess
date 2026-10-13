@@ -52,7 +52,7 @@ CryptoSuccess is a modern web application that provides AI-generated cryptocurre
 
 ```
 cryptosuccess/
-├── docs/                  # BMad documentation
+├── docs/                  # Project documentation
 │   ├── prd.md            # Product Requirements
 │   ├── architecture.md   # System Architecture
 │   └── frontend-spec.md  # UI Specifications
@@ -313,4 +313,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Built with ❤️ using the BMad Method

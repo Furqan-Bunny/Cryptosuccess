@@ -1,7 +1,7 @@
 # Implementation Guide - CryptoSuccess MVP
 
 ## Overview
-This guide provides step-by-step instructions for implementing the CryptoSuccess MVP following the BMad methodology. The implementation is divided into phases corresponding to the epic roadmap.
+This guide provides step-by-step instructions for implementing the CryptoSuccess MVP following the phased roadmap below. The implementation is divided into phases corresponding to the epic roadmap.
 
 ## Prerequisites Checklist
 - [ ] Node.js 18+ and npm 9+ installed
@@ -494,7 +494,6 @@ firebase deploy --only firestore:rules
 - [Stripe Documentation](https://stripe.com/docs)
 - [Next.js Documentation](https://nextjs.org/docs)
 - [TensorFlow.js Guide](https://www.tensorflow.org/js/guide)
-- [BMad Method Guide](./docs/user-guide.md)
 
 ## Conclusion
 
