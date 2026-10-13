@@ -1,315 +1,105 @@
-# CryptoSuccess - AI-Powered Cryptocurrency Trading Signals
+# CryptoSuccess
 
-![CryptoSuccess Logo](public/logo.png)
+Cryptocurrency trading signals with a published track record, a Telegram coach, and on-chain
+anchoring so past calls cannot be edited after the fact.
 
-CryptoSuccess is a modern web application that provides AI-generated cryptocurrency trading signals for popular coins like Ethereum (ETH), Solana (SOL), and Binance Coin (BNB). Built with Next.js, Firebase, and TensorFlow.js, it offers real-time market analysis and actionable trading recommendations.
+Live at **[cryptosuccess.vercel.app](https://cryptosuccess.vercel.app)**
 
-## 🚀 Features
+## What it does
 
-- **AI-Powered Signals**: Machine learning algorithms analyze market data to generate buy/sell/hold recommendations
-- **Real-Time Market Data**: Live price feeds from Binance and CoinGecko APIs
-- **Interactive Charts**: Beautiful, responsive charts with Chart.js and Recharts
-- **Subscription Tiers**: Free and Pro plans with Stripe integration
-- **Secure Authentication**: Firebase Auth with email/password and Google Sign-In
-- **Responsive Design**: Mobile-first approach with Tailwind CSS
-- **Technical Indicators**: RSI, MACD, Moving Averages, and more
+Most signal services are unfalsifiable. They show the wins, quietly drop the losses, and
+nothing stops the record being rewritten later. This is built the other way round.
 
-## 📋 Prerequisites
+- **Signals for ETH, SOL and BNB** from TensorFlow.js models over live market data, with a
+  rule-based fallback so the product still works when a model is unavailable.
+- **An analyst layer** that reads each signal across multiple timeframes alongside live news,
+  and states what it is unsure about instead of hiding it.
+- **An anchored track record.** Every published call is hashed and written to a smart contract
+  before the outcome is known, so the history can be verified rather than trusted.
+- **A Telegram coach** that delivers signals and the reasoning behind them.
+- **Subscriptions** through Stripe, plus crypto payments through NOWPayments.
 
-- Node.js >= 18.0.0
-- npm >= 9.0.0
-- Firebase CLI (`npm install -g firebase-tools`)
-- Git
-- A Firebase project
-- Stripe account (for payments)
-- Binance API key (optional, for premium data)
+## Stack
 
-## 🛠️ Tech Stack
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 14 (App Router), React 18, TypeScript |
+| Data and auth | Supabase (Postgres, Row Level Security, 8 migrations) |
+| Signal models | TensorFlow.js |
+| Analyst layer | Anthropic API |
+| On-chain | Solidity, Foundry, viem + wagmi |
+| Payments | Stripe, NOWPayments |
+| Bot | Telegram Bot API |
+| Market data | Binance, CoinGecko |
+| UI | Tailwind CSS, Chart.js, Recharts, Zustand, React Query |
+| Tests | Jest, React Testing Library |
+| Deploy | Vercel |
 
-### Frontend
-- **Framework**: Next.js 14
-- **UI Library**: React 18
-- **Styling**: Tailwind CSS
-- **Charts**: Chart.js, Recharts
-- **State Management**: Zustand
-- **Forms**: React Hook Form
-- **Animations**: Framer Motion
-
-### Backend
-- **Platform**: Firebase (Firestore, Functions, Auth, Hosting)
-- **Functions Runtime**: Node.js 18
-- **Payment Processing**: Stripe
-- **ML Framework**: TensorFlow.js
-
-### DevOps
-- **Type Checking**: TypeScript
-- **Linting**: ESLint
-- **Formatting**: Prettier
-- **Testing**: Jest, React Testing Library
-- **CI/CD**: GitHub Actions
-
-## 🏗️ Project Structure
+## Layout
 
 ```
-cryptosuccess/
-├── docs/                  # Project documentation
-│   ├── prd.md            # Product Requirements
-│   ├── architecture.md   # System Architecture
-│   └── frontend-spec.md  # UI Specifications
-├── functions/            # Firebase Cloud Functions
-│   ├── src/
-│   │   ├── auth/        # Authentication handlers
-│   │   ├── market/      # Market data collectors
-│   │   ├── signals/     # AI signal generation
-│   │   ├── payments/    # Stripe integration
-│   │   └── schedulers/  # Cron jobs
-│   └── package.json
-├── src/                  # Next.js application
-│   ├── components/      # React components
-│   ├── pages/          # Next.js pages
-│   ├── hooks/          # Custom React hooks
-│   ├── services/       # API services
-│   ├── utils/          # Utilities
-│   └── types/          # TypeScript types
-├── public/             # Static assets
-├── tests/              # Test suites
-└── package.json        # Root dependencies
+src/
+  app/            Next.js routes, including the API handlers
+  components/     UI, grouped by feature
+  services/       Signals, analyst, market data, Telegram, payments
+  lib/            Supabase clients and shared helpers
+contracts/        TrackRecordAnchor.sol, Foundry tests, deploy script
+supabase/
+  migrations/     0001 to 0008, applied in order
+scripts/          Model training and backtesting
+tests/            Unit tests
+docs/             Architecture and deployment notes
 ```
 
-## 🚀 Getting Started
+## Running it
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/yourusername/cryptosuccess.git
-cd cryptosuccess
-```
+Needs Node 18+ and a Supabase project.
 
-### 2. Install Dependencies
 ```bash
 npm install
-```
-
-### 3. Set Up Environment Variables
-Copy the example environment file and fill in your values:
-```bash
-cp .env.local.example .env.local
-```
-
-Edit `.env.local` with your Firebase and Stripe credentials:
-```env
-NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_your_key
-# ... etc
-```
-
-### 4. Set Up Firebase
-
-#### Initialize Firebase
-```bash
-firebase login
-firebase init
-```
-
-Select:
-- Firestore
-- Functions
-- Hosting
-- Emulators
-
-#### Deploy Security Rules
-```bash
-firebase deploy --only firestore:rules
-```
-
-#### Deploy Indexes
-```bash
-firebase deploy --only firestore:indexes
-```
-
-### 5. Set Up Functions Environment
-```bash
-cd functions
-npm install
-firebase functions:config:set stripe.secret="sk_test_your_secret_key"
-firebase functions:config:set binance.api_key="your_api_key"
-firebase functions:config:set binance.secret_key="your_secret_key"
-cd ..
-```
-
-### 6. Run Development Server
-```bash
-# Start Firebase emulators
-npm run firebase:emulators
-
-# In another terminal, start Next.js
+cp .env.local.example .env.local   # then fill in the values
 npm run dev
 ```
 
-Visit http://localhost:3000 to see the application.
+Apply the migrations in `supabase/migrations/` in order, or run the combined
+`supabase/ALL_MIGRATIONS.sql` against a fresh database.
 
-## 📝 Available Scripts
+`.env.local.example` lists every variable the app reads and what each is for. Nothing in it
+is a real credential.
 
-### Development
-- `npm run dev` - Start Next.js development server
-- `npm run firebase:emulators` - Start Firebase emulators
-- `npm run functions:serve` - Test functions locally
+### Scripts
 
-### Build & Deploy
-- `npm run build` - Build production bundle
-- `npm run firebase:deploy` - Deploy to Firebase
-- `npm run functions:deploy` - Deploy functions only
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Development server |
+| `npm run build` | Production build |
+| `npm run test` | Jest suite |
+| `npm run type-check` | TypeScript, no emit |
+| `npm run train:models` | Train the signal models |
+| `npm run backtest` | Backtest the technical baseline |
 
-### Testing & Quality
-- `npm test` - Run test suite
-- `npm run lint` - Run ESLint
-- `npm run type-check` - Check TypeScript types
-- `npm run format` - Format code with Prettier
+`npm run backtest` measures the models on their own, without the analyst layer, so the
+baseline stays honest.
 
-## 🔧 Configuration
+## Notes on the design
 
-### Firebase Setup
-1. Create a new Firebase project at https://console.firebase.google.com
-2. Enable Authentication (Email/Password and Google)
-3. Create a Firestore database
-4. Set up Firebase Hosting
-5. Configure project in `firebase.json`
+**The model proposes, the rules dispose.** Anything deciding money or eligibility runs in a
+rules engine outside the model. The analyst layer explains and contextualises; it does not
+get the final say.
 
-### Stripe Setup
-1. Create a Stripe account at https://stripe.com
-2. Get your API keys from the dashboard
-3. Create products and prices for subscription tiers
-4. Set up webhook endpoint for `/api/stripe/webhook`
+**Silence is the expensive failure.** A wrong signal gets noticed and argued with. A
+scheduled job that quietly stops running does not, so those paths report when they did
+nothing and why.
 
-### API Configuration
-1. **Binance API** (Optional for premium features):
-   - Register at https://www.binance.com/en/my/settings/api-management
-   - Create API key with read-only permissions
+**The track record is anchored before the outcome is known.** A hash of each call goes
+on-chain at publication time, which is the whole point: a record that can be checked instead
+of a screenshot that has to be believed.
 
-2. **CoinGecko API** (Free tier available):
-   - Get API key from https://www.coingecko.com/en/api
+## Status
 
-## 📊 Data Flow
+Deployed and running. The Telegram bot is live, the signal models and analyst layer are in
+production, and the on-chain anchoring is deployed to testnet.
 
-### Signal Generation Process
-1. **Data Collection**: Market data fetched every minute from exchanges
-2. **Technical Analysis**: Calculate indicators (RSI, MACD, MA)
-3. **AI Prediction**: TensorFlow model analyzes patterns
-4. **Signal Creation**: Generate buy/sell/hold with confidence score
-5. **Real-time Updates**: Push to connected clients via Firestore
+## License
 
-### Subscription Flow
-1. User selects plan on pricing page
-2. Redirect to Stripe Checkout
-3. Payment processed by Stripe
-4. Webhook updates user subscription in Firestore
-5. UI reflects new subscription status
-
-## 🧪 Testing
-
-### Unit Tests
-```bash
-npm test
-```
-
-### Integration Tests
-```bash
-npm run test:integration
-```
-
-### E2E Tests
-```bash
-npm run test:e2e
-```
-
-## 🚢 Deployment
-
-### Production Deployment
-1. Build the Next.js app:
-   ```bash
-   npm run build
-   ```
-
-2. Deploy to Firebase:
-   ```bash
-   npm run firebase:deploy
-   ```
-
-3. Verify deployment:
-   - Check hosting URL
-   - Test authentication flow
-   - Verify payment processing
-   - Monitor function logs
-
-### Environment-Specific Deployments
-- **Staging**: `firebase use staging && firebase deploy`
-- **Production**: `firebase use production && firebase deploy`
-
-## 📈 Performance Optimization
-
-- **Code Splitting**: Dynamic imports for route-based splitting
-- **Image Optimization**: Next.js Image component with lazy loading
-- **Caching**: Firebase Firestore offline persistence
-- **CDN**: Static assets served via Firebase Hosting CDN
-- **API Rate Limiting**: Implemented in Cloud Functions
-
-## 🔒 Security Considerations
-
-- **Authentication**: Firebase Auth with secure session management
-- **Authorization**: Firestore security rules enforce access control
-- **Data Encryption**: HTTPS everywhere, sensitive data encrypted
-- **API Keys**: Stored securely in environment variables
-- **Input Validation**: Server-side validation on all endpoints
-- **Rate Limiting**: Prevent abuse of API endpoints
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-1. **Firebase emulators not starting**:
-   ```bash
-   firebase emulators:start --import=./emulator-data --export-on-exit
-   ```
-
-2. **TypeScript errors**:
-   ```bash
-   npm run type-check
-   ```
-
-3. **Stripe webhook failures**:
-   - Verify webhook secret is correct
-   - Check function logs: `firebase functions:log`
-
-4. **Build failures**:
-   - Clear cache: `rm -rf .next node_modules`
-   - Reinstall: `npm install`
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Firebase](https://firebase.google.com/) for the backend infrastructure
-- [Stripe](https://stripe.com/) for payment processing
-- [Binance](https://www.binance.com/) for market data
-- [TensorFlow](https://www.tensorflow.org/) for machine learning
-- [Vercel](https://vercel.com/) for Next.js framework
-
-## 📞 Support
-
-- Documentation: See `/docs` folder
-- Issues: [GitHub Issues](https://github.com/yourusername/cryptosuccess/issues)
-- Email: support@cryptosuccess.com
-
----
-
+MIT.
