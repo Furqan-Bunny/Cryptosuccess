@@ -1,7 +1,7 @@
 # Implementation Status - CryptoSuccess MVP
 
 ## Overview
-This document tracks the implementation progress of the CryptoSuccess MVP following the BMad methodology.
+This document tracks the implementation progress of the CryptoSuccess MVP.
 
 ## Completed Components
 
