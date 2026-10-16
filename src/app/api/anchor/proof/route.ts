@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { computeMerkleProof } from '@/lib/merkle';
 import { anchorDayKey } from '@/lib/server/anchor';
 import { rateLimit, clientIp } from '@/lib/server/rate-limit';
+import { isUuid } from '@/lib/uuid';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,18 +20,20 @@ export async function GET(request: NextRequest) {
   }
 
   const signalId = request.nextUrl.searchParams.get('signalId');
-  if (!signalId) {
+  // Signal ids are UUIDs; reject anything else before it reaches a query.
+  if (!isUuid(signalId)) {
     return NextResponse.json({ available: false, reason: 'bad_request' }, { status: 400 });
   }
 
   try {
     const db = createServiceClient();
 
-    const { data: leaf } = await db
+    const { data: leaf, error: leafErr } = await db
       .from('signal_leaves')
       .select('anchor_day, leaf_index, leaf_hash, canonical')
       .eq('signal_id', signalId)
       .maybeSingle();
+    if (leafErr) throw leafErr;
 
     if (!leaf) {
       // Not yet anchored (finalizes 24h+ after creation, anchored next day).

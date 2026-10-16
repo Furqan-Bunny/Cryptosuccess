@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { getUidFromToken, createServiceClient } from '@/lib/supabase/server';
+import { reportError } from '@/lib/server/report-error';
 import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 function getStripe() {
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ url: session.url });
   } catch (error) {
-    console.error('Stripe billing portal error:', error);
+    await reportError('stripe.billing-portal', error, { route: '/api/stripe/billing-portal' });
     return NextResponse.json(
       { error: 'Failed to create billing portal session' },
       { status: 500 }

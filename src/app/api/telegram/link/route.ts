@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { getUidFromToken, createServiceClient } from '@/lib/supabase/server';
+import { reportError } from '@/lib/server/report-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +36,7 @@ export async function POST(request: NextRequest) {
       .insert({ code, user_id: uid, expires_at: expiresAt });
     if (error) throw error;
   } catch (e) {
-    console.error('mint telegram link code failed:', e);
+    await reportError('telegram.link', e, { route: '/api/telegram/link' });
     return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
   }
 

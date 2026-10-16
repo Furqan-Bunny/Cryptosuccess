@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
+import { reportError } from '@/lib/server/report-error';
 import { resolveStripePriceId } from '@/lib/subscription-rules';
 import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
@@ -48,7 +49,7 @@ export async function POST(request: NextRequest) {
     // id is never accepted (it could point at a cheaper or $0 price).
     const priceId = resolveStripePriceId(plan, interval, process.env);
     if (!priceId) {
-      console.error(`Stripe price for pro/${interval} is not configured`);
+      await reportError('stripe.checkout', new Error(`Stripe price for pro/${interval} is not configured`), { route: '/api/stripe/checkout' });
       return NextResponse.json({ error: 'Plan not available' }, { status: 503 });
     }
 
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ sessionId: session.id, url: session.url });
   } catch (error) {
-    console.error('Stripe checkout error:', error);
+    await reportError('stripe.checkout', error, { route: '/api/stripe/checkout' });
     return NextResponse.json(
       { error: 'Failed to create checkout session' },
       { status: 500 }

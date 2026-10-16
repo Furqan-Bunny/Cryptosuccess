@@ -12,6 +12,7 @@ import {
   type Hex,
 } from 'viem';
 import { hashLeaf, verifyMerkleProof } from '@/lib/merkle';
+import { UUID_RE } from '@/lib/uuid';
 
 // Public client-side config (safe to expose). When unset, on-chain verification
 // is skipped and only the off-chain proof (leaf → root) is checked.
@@ -37,7 +38,6 @@ type Check = 'pending' | 'pass' | 'fail' | 'skip';
 
 // Signal IDs are UUIDs. Checked client-side only to give a helpful message before
 // making a request; it is not part of the verification itself.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Plain-language versions of the proof endpoint's failure reasons.
 const REASON_TEXT: Record<string, string> = {

@@ -6,6 +6,9 @@ import { generateAnalystTake } from '@/services/analyst.service';
 import { isSupportedCoin } from '@/lib/coins';
 import { isEffectivePro } from '@/lib/subscription-rules';
 import { sanitizeAnalystSignal } from '@/lib/signal-input';
+import { reportError } from '@/lib/server/report-error';
+
+const ROUTE = '/api/ai/analyst';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // web search + multi-step reasoning needs headroom
@@ -85,7 +88,7 @@ export async function POST(request: NextRequest) {
     } catch (e) {
       // Fail CLOSED: if access can't be verified, don't burn API credit or hand
       // out the premium feature.
-      console.error('analyst access check failed (denying):', e);
+      await reportError('analyst.access', e, { route: ROUTE });
       return NextResponse.json({ available: false, reason: 'quota_unavailable' }, { status: 503 });
     }
 
@@ -100,11 +103,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ available: true, analysis: result.analysis, cached: result.cached });
   } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      console.error(`AI analyst API error ${error.status}:`, error.message);
-    } else {
-      console.error('AI analyst error:', error);
-    }
+    await reportError('analyst.generate', error, {
+      route: ROUTE,
+      ...(error instanceof Anthropic.APIError ? { apiStatus: error.status } : {}),
+    });
     return NextResponse.json({ available: false, reason: 'error' }, { status: 502 });
   }
 }

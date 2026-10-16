@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { secretsMatch } from '@/lib/telegram/api';
 import { isAnalystConfigured, isSupabaseConfigured, resolveBaseUrl } from '@/lib/telegram/env';
 import { rateLimit } from '@/lib/server/rate-limit';
+import { reportError } from '@/lib/server/report-error';
 import { generateAnalystTake } from '@/services/analyst.service';
 import { handleIncoming } from '@/services/bot/core';
 import { parseTelegramUpdate, telegramAdapter } from '@/services/telegram/adapter';
@@ -56,6 +57,7 @@ export async function POST(request: NextRequest) {
     analyst: db && isAnalystConfigured() ? symbol => generateAnalystTake(symbol, db) : null,
     limiter: rateLimit,
     baseUrl: resolveBaseUrl(request.headers),
+    reportError: (context, error) => reportError(context, error, { route: '/api/telegram/webhook' }),
   });
 
   return ack();

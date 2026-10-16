@@ -91,4 +91,9 @@ export interface BotDeps {
   limiter: RateLimiter;
   /** Public app URL for /verify, /pricing and /settings links. */
   baseUrl: string;
+  /**
+   * Optional server error reporter (logs + error_events + admin alert). When
+   * absent, failures are only written to the console.
+   */
+  reportError?: (context: string, error: unknown) => Promise<void>;
 }

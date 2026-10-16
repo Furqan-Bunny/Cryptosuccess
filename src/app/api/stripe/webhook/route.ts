@@ -4,6 +4,18 @@ import { headers } from 'next/headers';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServiceClient } from '@/lib/supabase/server';
 import { mapStripeStatus, stripePeriodEndIso } from '@/lib/subscription-rules';
+import {
+  asUuid,
+  checkoutActivationPatch,
+  checkoutUserId,
+  idOf,
+  isCheckoutPaid,
+  profileTracksSubscription as tracksSubscription,
+  subscriptionChange,
+} from '@/lib/stripe-events';
+import { reportError } from '@/lib/server/report-error';
+
+const ROUTE = '/api/stripe/webhook';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -14,16 +26,6 @@ function getStripe() {
   });
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function asUuid(value: unknown): string | null {
-  return typeof value === 'string' && UUID_RE.test(value) ? value : null;
-}
-
-function idOf(ref: string | { id: string } | null | undefined): string | null {
-  if (!ref) return null;
-  return typeof ref === 'string' ? ref : ref.id;
-}
 
 // metadata.userId is written by our own checkout route (server-derived); fall
 // back to the Stripe customer id for subscriptions created outside that flow.
@@ -54,7 +56,7 @@ async function profileTracksSubscription(db: SupabaseClient, userId: string, sub
   const { data, error } = await db.from('profiles').select('plan_id').eq('id', userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) return false;
-  return data.plan_id == null || data.plan_id === subscriptionId;
+  return tracksSubscription(data.plan_id, subscriptionId);
 }
 
 export async function POST(request: NextRequest) {
@@ -71,6 +73,7 @@ export async function POST(request: NextRequest) {
 
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
     if (!webhookSecret) {
+      await reportError('stripe.webhook', new Error('STRIPE_WEBHOOK_SECRET is not configured'), { route: ROUTE });
       return NextResponse.json(
         { error: 'Webhook secret not configured' },
         { status: 500 }
@@ -83,7 +86,8 @@ export async function POST(request: NextRequest) {
     try {
       event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
     } catch (err) {
-      console.error('Webhook signature verification failed:', err);
+      // Expected for forged / misrouted calls: log as a warning, no alert.
+      await reportError('stripe.webhook', err, { route: ROUTE, level: 'warn', alert: false, stage: 'signature' });
       return NextResponse.json(
         { error: 'Invalid signature' },
         { status: 400 }
@@ -103,7 +107,8 @@ export async function POST(request: NextRequest) {
       }
       // Non-duplicate error (e.g. table not yet created): log and continue
       // best-effort rather than dropping the event.
-      console.warn('webhook idempotency claim failed (continuing):', claimErr.message);
+      // Every handler below sets absolute state, so a replay is harmless.
+      await reportError('stripe.webhook', claimErr, { route: ROUTE, level: 'warn', stage: 'claim' });
     }
 
     try {
@@ -112,14 +117,17 @@ export async function POST(request: NextRequest) {
         const session = event.data.object as Stripe.Checkout.Session;
         if (session.mode !== 'subscription') break;
 
-        const userId = asUuid(session.metadata?.userId) ?? asUuid(session.client_reference_id);
+        const userId = checkoutUserId(session);
         if (!userId) {
-          console.error('No valid userId in checkout session metadata / client_reference_id');
+          await reportError('stripe.webhook', new Error('Checkout session without a valid user id'), {
+            route: ROUTE,
+            eventId: event.id,
+          });
           break;
         }
         // Card checkouts are paid on completion; a trial needs no payment. Any
         // other state waits for customer.subscription.updated.
-        if (session.payment_status !== 'paid' && session.payment_status !== 'no_payment_required') {
+        if (!isCheckoutPaid(session.payment_status)) {
           console.log(`Checkout completed without payment (${session.payment_status}) for user: ${userId}`);
           break;
         }
@@ -137,14 +145,11 @@ export async function POST(request: NextRequest) {
           periodEnd = stripePeriodEndIso(subscription);
         }
 
-        await updateProfile(db, userId, {
-          subscription_status: 'pro',
-          customer_id: idOf(session.customer),
-          plan_id: subscriptionId,
-          current_period_end: periodEnd,
-          signals_used_today: 0,
-          last_reset_date: new Date().toISOString(),
-        });
+        await updateProfile(
+          db,
+          userId,
+          checkoutActivationPatch({ customerId: idOf(session.customer), subscriptionId, periodEnd })
+        );
         console.log(`Subscription activated for user: ${userId}`);
         break;
       }
@@ -156,29 +161,24 @@ export async function POST(request: NextRequest) {
         const userId = await resolveUserId(db, subscription.metadata?.userId, customerId);
         if (!userId) break;
 
-        const status = mapStripeStatus(subscription.status);
-        if (status == null) {
+        const change = subscriptionChange({
+          status: subscription.status,
+          subscriptionId: subscription.id,
+          customerId,
+          periodEnd: stripePeriodEndIso(subscription),
+        });
+        if (change.kind === 'none') {
           // e.g. `incomplete`: first payment still pending — leave access as is.
           console.log(`Subscription ${subscription.status} for user: ${userId} (no change)`);
           break;
         }
-        const periodEnd = stripePeriodEndIso(subscription);
 
-        if (status === 'pro') {
-          await updateProfile(db, userId, {
-            subscription_status: 'pro',
-            plan_id: subscription.id,
-            ...(customerId ? { customer_id: customerId } : {}),
-            ...(periodEnd ? { current_period_end: periodEnd } : {}),
-          });
+        if (change.kind === 'pro') {
+          await updateProfile(db, userId, change.patch);
         } else if (await profileTracksSubscription(db, userId, subscription.id)) {
-          await updateProfile(db, userId, {
-            subscription_status: 'free',
-            plan_id: null,
-            current_period_end: periodEnd,
-          });
+          await updateProfile(db, userId, change.patch);
         }
-        console.log(`Subscription updated for user: ${userId}, status: ${status}`);
+        console.log(`Subscription updated for user: ${userId}, status: ${change.kind}`);
         break;
       }
 
@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ received: true });
   } catch (error) {
-    console.error('Stripe webhook error:', error);
+    await reportError('stripe.webhook', error, { route: ROUTE });
     return NextResponse.json(
       { error: 'Webhook handler failed' },
       { status: 500 }

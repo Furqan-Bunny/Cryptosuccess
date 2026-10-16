@@ -6,6 +6,7 @@ import { isSupportedCoin } from '@/lib/coins';
 import type { SignalOutcome } from '@/lib/signal-outcome';
 import { TELEGRAM_READ_PREFIX } from './record';
 import type { FollowUpSignal } from './format';
+import { UUID_RE } from '@/lib/uuid';
 
 export const FINAL_OUTCOMES: SignalOutcome[] = ['hit_target', 'hit_stop', 'expired_profit', 'expired_loss'];
 
@@ -30,7 +31,6 @@ export interface SignalRow {
   evaluated_at: unknown;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function num(v: unknown): number | null {
   if (v == null || v === '') return null;

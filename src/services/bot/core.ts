@@ -90,12 +90,25 @@ export async function handleIncoming(msg: IncomingMessage, deps: BotDeps, memory
 
     await route(msg, parsed, deps, send, memory);
   } catch (e) {
-    console.error(`${msg.channel} bot handler error:`, e);
+    await reportFailure(deps, `bot.${msg.channel}.handler`, e);
     try { await send(errorMessage()); } catch {}
   }
 }
 
 type Send = (text: string) => Promise<void>;
+
+/** Report a handled failure through the channel's reporter, or the console. */
+async function reportFailure(deps: BotDeps, context: string, error: unknown): Promise<void> {
+  if (!deps.reportError) {
+    console.error(`${context}:`, error);
+    return;
+  }
+  try {
+    await deps.reportError(context, error);
+  } catch {
+    /* reporting must never break a reply */
+  }
+}
 
 async function route(msg: IncomingMessage, parsed: ParsedCommand, deps: BotDeps, send: Send, memory: MemoryRateLimiter): Promise<void> {
   const base = deps.baseUrl;
@@ -142,7 +155,7 @@ async function withStore(deps: BotDeps, send: Send, fn: (store: BotStore) => Pro
   try {
     await fn(deps.store);
   } catch (e) {
-    console.error('bot settings command failed:', e);
+    await reportFailure(deps, 'bot.settings', e);
     await send(errorMessage());
   }
 }
@@ -163,7 +176,7 @@ async function handleLink(msg: IncomingMessage, arg: string, deps: BotDeps, send
     if (res.ok) return send(linkSuccessMessage());
     return send(linkFailedMessage(res.reason ?? 'invalid'));
   } catch (e) {
-    console.error('redeem link failed:', e);
+    await reportFailure(deps, 'bot.link', e);
     return send(errorMessage());
   }
 }
@@ -187,7 +200,8 @@ async function handleSignal(msg: IncomingMessage, arg: string, deps: BotDeps, se
   try {
     gate = await store.consumeSignal(msg.chatId);
   } catch (e) {
-    console.error('consume signal failed (denying):', e);
+    // Denied (fail closed); reported so a broken quota RPC is noticed.
+    await reportFailure(deps, 'bot.quota', e);
     return send(errorMessage());
   }
   if (!gate.allowed) return send(limitReachedMessage(`${deps.baseUrl}/pricing`));
@@ -199,7 +213,7 @@ async function handleSignal(msg: IncomingMessage, arg: string, deps: BotDeps, se
   try {
     result = await analyst(symbol);
   } catch (e) {
-    console.error('analyst generation failed:', e);
+    await reportFailure(deps, 'bot.analyst', e);
   }
   if (!result) {
     // N14: the user got nothing, so give the credit back (Pro consumed nothing).

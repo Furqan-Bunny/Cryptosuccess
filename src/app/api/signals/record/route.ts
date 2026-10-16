@@ -3,6 +3,10 @@ import { getUidFromToken, createServiceClient } from '@/lib/supabase/server';
 import { rateLimit } from '@/lib/server/rate-limit';
 import { fetchSpotPrice } from '@/lib/server/binance-server';
 import { validateSignalInput, isEntryNearSpot, rebaseToSpot } from '@/lib/signal-input';
+import { reportError } from '@/lib/server/report-error';
+import { TELEGRAM_READ_PREFIX } from '@/services/bot/record';
+
+const ROUTE = '/api/signals/record';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +48,11 @@ export async function POST(request: NextRequest) {
   const parsed = validateSignalInput(body);
   if (!parsed.ok) return NextResponse.json({ ok: false, reason: parsed.error }, { status: 400 });
   const input = parsed.value;
+  // The Telegram follow-up cron selects bot calls by this reasoning prefix; a web
+  // signal must not be able to pass itself off as one.
+  if (input.reasoning.toLowerCase().startsWith(TELEGRAM_READ_PREFIX.toLowerCase())) {
+    return NextResponse.json({ ok: false, reason: 'invalid_reasoning' }, { status: 400 });
+  }
 
   // Price BEFORE spending a credit, so a market-data outage costs the user nothing.
   let spot: number | null = null;
@@ -73,7 +82,7 @@ export async function POST(request: NextRequest) {
     remaining = Number(gate.remaining);
     if (!Number.isFinite(remaining)) throw new Error('consume_signal returned no remaining');
   } catch (e) {
-    console.error('signal quota check failed (denying):', e);
+    await reportError('signals.record.quota', e, { route: ROUTE });
     return NextResponse.json({ ok: false, reason: 'quota_unavailable' }, { status: 503 });
   }
 
@@ -98,7 +107,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (insertErr || !row) {
-    console.error('signal insert failed:', insertErr?.message);
+    await reportError('signals.record.insert', insertErr ?? new Error('insert returned no row'), { route: ROUTE });
     // Give the credit back — the user got nothing for it. Pro (-1) never spent one.
     if (remaining >= 0) {
       try {
@@ -106,7 +115,7 @@ export async function POST(request: NextRequest) {
         if (refundErr) throw refundErr;
         if (refund && Number.isFinite(Number(refund.remaining))) remaining = Number(refund.remaining);
       } catch (e) {
-        console.error('signal credit refund failed:', e);
+        await reportError('signals.record.refund', e, { route: ROUTE });
       }
     }
     return NextResponse.json({ ok: false, reason: 'record_failed', remaining }, { status: 500 });
