@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import {
   createPublicClient,
   http,
@@ -34,6 +35,23 @@ const ROOTS_ABI = [
 
 type Check = 'pending' | 'pass' | 'fail' | 'skip';
 
+// Signal IDs are UUIDs. Checked client-side only to give a helpful message before
+// making a request; it is not part of the verification itself.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Plain-language versions of the proof endpoint's failure reasons.
+const REASON_TEXT: Record<string, string> = {
+  invalid_id: 'That does not look like a signal ID. Signal IDs look like 3f1c2a9e-1b2c-4d5e-8f90-123456789abc.',
+  bad_request: 'Please enter a signal ID.',
+  rate_limited: 'Too many checks in a short time. Please wait a minute and try again.',
+  anchor_missing: 'This signal has a recorded leaf but its daily anchor could not be loaded. Please try again later.',
+  error: 'Something went wrong while fetching the proof. Please try again.',
+};
+
+function reasonText(reason: string): string {
+  return REASON_TEXT[reason] ?? REASON_TEXT.error;
+}
+
 interface Result {
   loading: boolean;
   error?: string;
@@ -58,8 +76,13 @@ function VerifyInner() {
   const [signalId, setSignalId] = useState(params?.get('signalId') ?? '');
   const [res, setRes] = useState<Result | null>(null);
 
-  const verify = useCallback(async (id: string) => {
+  const verify = useCallback(async (rawId: string) => {
+    const id = rawId.trim();
     if (!id) return;
+    if (!UUID_RE.test(id)) {
+      setRes({ loading: false, error: 'invalid_id' });
+      return;
+    }
     setRes({ loading: true });
     try {
       const resp = await fetch(`/api/anchor/proof?signalId=${encodeURIComponent(id)}`);
@@ -138,30 +161,55 @@ function VerifyInner() {
   return (
     <div className="max-w-2xl mx-auto p-6">
       <h1 className="text-2xl font-semibold text-white mb-2">Verify a signal on-chain</h1>
-      <p className="text-text-secondary mb-6">
-        Every finalized signal is committed to a daily Merkle root anchored on {NETWORK}. Paste a
-        signal ID to prove it was recorded and never edited — verification runs entirely in your
-        browser against the public chain.
+      <p className="text-text-secondary mb-4">
+        Once a signal is at least 24 hours old our server scores it. Each day&apos;s scored
+        results are hashed into a Merkle tree and its root is written to a smart contract on{' '}
+        {NETWORK}. Paste a signal ID to check that its scored result was included and has not been
+        edited since. The hashing and proof checks run in your browser, and the final step reads
+        the root straight from the public chain, so you do not have to take our word for it.
+      </p>
+      <p className="text-text-secondary text-sm mb-6">
+        Signed in? Use the verify link next to any finalized signal in your signal history. Losing
+        signals are anchored exactly like winning ones.{' '}
+        <Link href="/#track-record" className="text-primary hover:text-primary-light">
+          How the record works
+        </Link>
       </p>
 
-      <div className="flex gap-2 mb-6">
+      <form
+        className="flex gap-2 mb-6"
+        onSubmit={e => {
+          e.preventDefault();
+          verify(signalId);
+        }}
+      >
+        <label htmlFor="signal-id" className="sr-only">Signal ID</label>
         <input
+          id="signal-id"
           value={signalId}
           onChange={e => setSignalId(e.target.value)}
-          placeholder="signal id (uuid)"
-          className="flex-1 bg-surface border border-gray-700 rounded-lg px-3 py-2 text-white"
+          placeholder="Signal ID, e.g. 3f1c2a9e-1b2c-4d5e-8f90-123456789abc"
+          autoComplete="off"
+          spellCheck={false}
+          maxLength={64}
+          className="flex-1 min-w-0 bg-surface border border-gray-700 rounded-lg px-3 py-2 text-white"
         />
-        <button onClick={() => verify(signalId)} className="btn-primary px-4 py-2">
+        <button
+          type="submit"
+          disabled={!signalId.trim() || res?.loading}
+          className="btn-primary px-4 py-2"
+        >
           Verify
         </button>
-      </div>
+      </form>
 
       {res?.loading && <p className="text-text-secondary">Verifying…</p>}
-      {res?.error && <p className="text-red-400">Could not verify: {res.error}</p>}
+      {res?.error && <p className="text-red-400">Could not verify: {reasonText(res.error)}</p>}
       {res && !res.loading && res.anchored === false && (
         <p className="text-text-secondary">
-          This signal isn’t anchored yet. Signals finalize 24h after creation and are anchored the
-          following day.
+          This signal isn&apos;t anchored yet. Signals are scored once they are 24 hours old, and
+          each day&apos;s scored results are anchored after that day ends (UTC). Check back
+          tomorrow. If the ID is wrong, no signal will ever show up here.
         </p>
       )}
 
@@ -179,6 +227,13 @@ function VerifyInner() {
             <span className="text-text-secondary">On-chain root ({NETWORK})</span>
             {badge(res.chainMatch)}
           </div>
+          {res.chainMatch === 'fail' && !res.txHash && (
+            <p className="text-xs text-text-secondary">
+              No anchoring transaction has been recorded for this day yet, so its root is not on
+              the chain yet. The off-chain inclusion proof above still holds; check back after the
+              next daily anchor run.
+            </p>
+          )}
           {res.chainMatch === 'skip' && (
             <p className="text-xs text-text-secondary">
               On-chain read skipped (public RPC not configured or unreachable). The off-chain

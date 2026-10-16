@@ -4,32 +4,35 @@ import './globals.css';
 
 const inter = Inter({ subsets: ['latin'] });
 
+// Absolute base for Open Graph URLs. Falls back to localhost when the public app
+// URL is unset or malformed so metadata generation never throws.
+function siteUrl(): URL {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+  } catch {
+    return new URL('http://localhost:3000');
+  }
+}
+
 export const metadata: Metadata = {
-  title: 'CryptoSuccess - AI-Powered Crypto Trading Signals',
-  description: 'Get AI-generated cryptocurrency trading signals for ETH, SOL, and BNB. Make data-driven trading decisions with our advanced machine learning algorithms.',
-  keywords: 'cryptocurrency, trading signals, AI, machine learning, Bitcoin, Ethereum, Solana, Binance',
+  metadataBase: siteUrl(),
+  title: 'CryptoSuccess - Honest crypto signals with a verifiable track record',
+  description:
+    'Risk-first crypto trade ideas with a stop-loss on every buy or sell call, a coach that says when to stay out, and a scored track record anchored on-chain that anyone can verify. Not financial advice.',
+  keywords:
+    'cryptocurrency, trading signals, risk management, stop-loss, verifiable track record, on-chain, Telegram bot, paper trading',
   authors: [{ name: 'CryptoSuccess Team' }],
   openGraph: {
-    title: 'CryptoSuccess - AI Trading Signals',
-    description: 'Professional cryptocurrency trading signals powered by AI',
-    url: 'https://cryptosuccess.com',
+    title: 'CryptoSuccess - The honest crypto coach',
+    description: 'Risk-first crypto signals with a track record you can verify yourself.',
     siteName: 'CryptoSuccess',
-    images: [
-      {
-        url: '/og-image.png',
-        width: 1200,
-        height: 630,
-        alt: 'CryptoSuccess - AI Trading Platform',
-      },
-    ],
     locale: 'en_US',
     type: 'website',
   },
   twitter: {
-    card: 'summary_large_image',
-    title: 'CryptoSuccess - AI Trading Signals',
-    description: 'Professional cryptocurrency trading signals powered by AI',
-    images: ['/twitter-image.png'],
+    card: 'summary',
+    title: 'CryptoSuccess - The honest crypto coach',
+    description: 'Risk-first crypto signals with a track record you can verify yourself.',
   },
   robots: {
     index: true,
@@ -41,10 +44,6 @@ export const metadata: Metadata = {
       'max-image-preview': 'large',
       'max-snippet': -1,
     },
-  },
-  icons: {
-    icon: '/favicon.ico',
-    apple: '/apple-icon.png',
   },
 };
 
