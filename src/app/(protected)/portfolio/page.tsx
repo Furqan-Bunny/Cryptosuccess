@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { portfolioService, PortfolioSummary, Trade, PortfolioAsset } from '@/services/portfolio.service';
@@ -48,14 +48,8 @@ function PortfolioPageInner() {
     notes: ''
   });
 
-  useEffect(() => {
-    if (user) {
-      loadPortfolio();
-      loadTrades();
-    }
-  }, [user]);
-
-  const loadPortfolio = async () => {
+  // Keyed on `user`, which useAuth keeps referentially stable across token refreshes.
+  const loadPortfolio = useCallback(async () => {
     if (!user) return;
 
     try {
@@ -65,9 +59,9 @@ function PortfolioPageInner() {
       console.error('Error loading portfolio:', error);
       toast.error('Failed to load portfolio');
     }
-  };
+  }, [user]);
 
-  const loadTrades = async () => {
+  const loadTrades = useCallback(async () => {
     if (!user) return;
 
     try {
@@ -78,7 +72,14 @@ function PortfolioPageInner() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadPortfolio();
+      loadTrades();
+    }
+  }, [user, loadPortfolio, loadTrades]);
 
   const handleSubmitTrade = async (e: React.FormEvent) => {
     e.preventDefault();

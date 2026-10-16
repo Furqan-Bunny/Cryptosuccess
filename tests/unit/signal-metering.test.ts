@@ -1,28 +1,10 @@
 // Tests for the metering + track-record fixes:
-//   - getSignalStats excludes HOLD from the win rate (mirrors
-//     signal-history.service, which isn't exported as a pure helper yet)
+//   - getSignalStats excludes HOLD from the win rate (computeSignalStats)
 //   - the shared scorer stores direction-correct P/L for SELL (short)
 //   - the daily limit resets on a UTC calendar-day boundary (not local midnight)
 import { deriveOutcome } from '../../src/lib/signal-outcome';
 import { remainingFreeSignals } from '../../src/lib/signal-allowance';
-
-type Outcome = 'hit_target' | 'hit_stop' | 'expired_profit' | 'expired_loss' | 'pending';
-interface Sig { action: 'BUY' | 'SELL' | 'HOLD'; outcome?: Outcome }
-
-// Mirrors signal-history.service.getSignalStats
-function stats(signals: Sig[]) {
-  const directional = signals.filter(s => s.action !== 'HOLD');
-  const evaluated = directional.filter(s => s.outcome && s.outcome !== 'pending');
-  const wins = evaluated.filter(s => s.outcome === 'hit_target' || s.outcome === 'expired_profit').length;
-  const losses = evaluated.filter(s => s.outcome === 'hit_stop' || s.outcome === 'expired_loss').length;
-  return {
-    total: directional.length,
-    wins,
-    losses,
-    pending: directional.length - evaluated.length,
-    winRate: evaluated.length > 0 ? (wins / evaluated.length) * 100 : 0,
-  };
-}
+import { computeSignalStats as stats } from '../../src/lib/signal-stats';
 
 describe('getSignalStats win-rate', () => {
   it('excludes HOLD from numerator and denominator', () => {

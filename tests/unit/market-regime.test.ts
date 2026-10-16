@@ -1,11 +1,25 @@
 import { detectMarketRegime, RegimeAnalysis } from '../../src/services/ai/market-regime.service';
 
-function generateTrendingCandles(count: number, direction: 'up' | 'down') {
+// Seeded (mulberry32) noise so every run sees the same candles — Math.random
+// made the regime assertions flaky.
+function seededRandom(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateTrendingCandles(count: number, direction: 'up' | 'down', seed = 7) {
+  const rand = seededRandom(seed);
   const candles = [];
   let price = 100;
   const step = direction === 'up' ? 1.5 : -1.5;
   for (let i = 0; i < count; i++) {
-    price += step + (Math.random() - 0.5) * 0.3;
+    price += step + (rand() - 0.5) * 0.3;
     candles.push({
       open: price - 0.5,
       high: price + 1,
@@ -17,11 +31,12 @@ function generateTrendingCandles(count: number, direction: 'up' | 'down') {
   return candles;
 }
 
-function generateRangingCandles(count: number) {
+function generateRangingCandles(count: number, seed = 11) {
+  const rand = seededRandom(seed);
   const candles = [];
   let price = 100;
   for (let i = 0; i < count; i++) {
-    price = 100 + Math.sin(i * 0.3) * 2 + (Math.random() - 0.5) * 0.5;
+    price = 100 + Math.sin(i * 0.3) * 2 + (rand() - 0.5) * 0.5;
     candles.push({
       open: price - 0.2,
       high: price + 0.5,

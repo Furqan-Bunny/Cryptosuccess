@@ -10,8 +10,6 @@ import { FaGoogle, FaEye, FaEyeSlash } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { safeRedirectPath } from '@/lib/safe-redirect';
 
-// v2.0 - Fixed TensorFlow initialization
-
 interface LoginFormData {
   email: string;
   password: string;
@@ -196,7 +194,7 @@ export default function LoginPage() {
 
         {/* Sign Up Link */}
         <p className="text-center text-text-secondary">
-          Don't have an account?{' '}
+          Don&apos;t have an account?{' '}
           <Link
             href="/register"
             className="text-primary hover:text-primary-light font-medium transition-colors"

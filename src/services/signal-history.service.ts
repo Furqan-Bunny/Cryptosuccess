@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase/client';
+import { computeSignalStats } from '@/lib/signal-stats';
 
 export interface StoredSignal {
   id?: string;
@@ -129,20 +130,8 @@ class SignalHistoryService {
     total: number; wins: number; losses: number; pending: number; winRate: number;
   }> {
     const signals = await this.getUserSignals(userId, 100);
-    // Only directional calls (BUY/SELL) count toward the track record. HOLD is
-    // non-directional and always scores 'expired_profit', so counting it would
-    // inflate the win rate. Exclude it from both numerator and denominator.
-    const directional = signals.filter(s => s.action !== 'HOLD');
-    const evaluated = directional.filter(s => s.outcome && s.outcome !== 'pending');
-    const wins = evaluated.filter(s => s.outcome === 'hit_target' || s.outcome === 'expired_profit').length;
-    const losses = evaluated.filter(s => s.outcome === 'hit_stop' || s.outcome === 'expired_loss').length;
-    return {
-      total: directional.length,
-      wins,
-      losses,
-      pending: directional.length - evaluated.length,
-      winRate: evaluated.length > 0 ? (wins / evaluated.length) * 100 : 0,
-    };
+    // HOLD is excluded from the win rate (see computeSignalStats).
+    return computeSignalStats(signals);
   }
 }
 

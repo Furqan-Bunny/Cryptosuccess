@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import SimDisclaimer from '@/components/shared/SimDisclaimer';
@@ -66,14 +66,8 @@ function TradePageInner() {
     enableRealtime: true
   });
 
-  useEffect(() => {
-    if (user) {
-      loadPortfolio();
-      loadOrders();
-    }
-  }, [user]);
-
-  const loadPortfolio = async () => {
+  // Keyed on `user`, which useAuth keeps referentially stable across token refreshes.
+  const loadPortfolio = useCallback(async () => {
     if (!user) return;
     try {
       const data = await portfolioService.getPortfolio(user.uid);
@@ -81,9 +75,9 @@ function TradePageInner() {
     } catch (error) {
       console.error('Error loading portfolio:', error);
     }
-  };
+  }, [user]);
 
-  const loadOrders = async () => {
+  const loadOrders = useCallback(async () => {
     if (!user) return;
     try {
       const data = await tradeExecutionService.getUserOrders(user.uid);
@@ -91,7 +85,14 @@ function TradePageInner() {
     } catch (error) {
       console.error('Error loading orders:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadPortfolio();
+      loadOrders();
+    }
+  }, [user, loadPortfolio, loadOrders]);
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
