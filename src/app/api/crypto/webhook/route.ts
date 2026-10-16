@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { headers } from 'next/headers';
 import { createServiceClient } from '@/lib/supabase/server';
-import { computeCryptoPeriodEnd, isExpectedCryptoPayment } from '@/lib/subscription-rules';
+import { computeCryptoPeriodEnd, hasActiveCardSubscription, isExpectedCryptoPayment } from '@/lib/subscription-rules';
 import { isCompletedPayment, parseCryptoOrderId, verifyNowpaymentsSignature } from '@/lib/nowpayments';
 import { reportError } from '@/lib/server/report-error';
 
@@ -99,15 +99,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ received: true, ignored: 'unknown_user' });
     }
 
+    const state = {
+      status: profile.subscription_status,
+      planId: profile.plan_id,
+      currentPeriodEnd: profile.current_period_end,
+    };
+
+    // Card and crypto Pro are mutually exclusive. Checkout refuses a crypto
+    // invoice for a card subscriber, so this is a race (card checkout finished
+    // while the invoice was confirming). Writing crypto_* over the card plan would
+    // hide Manage Billing while Stripe keeps charging, and the next renewal would
+    // wipe the crypto period anyway — so leave the profile alone, keep the claim
+    // and flag the payment for a manual refund.
+    if (hasActiveCardSubscription(state)) {
+      await reportError('crypto.webhook', new Error('Crypto payment for an active card subscriber; refund it'), {
+        route: ROUTE,
+        paymentId,
+        interval,
+        userId,
+      });
+      return NextResponse.json({ received: true, ignored: 'card_subscription_active' });
+    }
+
     // Already Pro with time left → extend from the current end, not from now.
-    const periodEnd = computeCryptoPeriodEnd(
-      {
-        status: profile.subscription_status,
-        planId: profile.plan_id,
-        currentPeriodEnd: profile.current_period_end,
-      },
-      interval
-    );
+    const periodEnd = computeCryptoPeriodEnd(state, interval);
 
     const { error: updErr } = await db
       .from('profiles')

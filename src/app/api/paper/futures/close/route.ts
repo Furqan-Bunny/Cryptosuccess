@@ -83,5 +83,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, reason, status: data.status ?? null }, { status: reason === 'not_found' ? 404 : 409 });
   }
 
-  return NextResponse.json({ ok: true, realizedPnl: Number(data.realized_pnl), closePrice: mark });
+  // `liquidated`: the mark was already past the liquidation price, so the
+  // position settled as a liquidation (margin lost) rather than a close.
+  return NextResponse.json({
+    ok: true,
+    realizedPnl: Number(data.realized_pnl),
+    closePrice: mark,
+    liquidated: data.liquidated === true,
+  });
 }

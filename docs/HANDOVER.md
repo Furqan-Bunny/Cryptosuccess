@@ -196,7 +196,27 @@ real processors listed). Backtest numbers quoted publicly come only from
     days. No signal ids or user ids are exposed.
   - One-time paper reset (guarded by a `data_fixes` marker row, so re-running is
     safe): all paper balances back to 10,000 and open stakes / futures closed,
-    because rows written before 0012 could be forged.
+    because rows written before 0012 could be forged. Each affected user gets
+    an in-app notification, and the futures history shows a voided position as
+    "Voided (paper reset)".
+- **Migration `0014`** (run it BEFORE deploying the matching code):
+  - Futures: margin of at least $10 and at most 25 open positions per user
+    (`MIN_MARGIN_USD` / `MAX_OPEN_POSITIONS` in `src/lib/futures.ts`); closing a
+    position whose mark is already past its liquidation price settles it as a
+    liquidation. The engine pages through every pending order and open
+    position, and cancels orders for coins outside the catalogue.
+  - Orders: a trigger caps client-written pending orders at 100 per user.
+  - Telegram: one linked chat per account (a new link moves it; the old chat is
+    unlinked and its alerts switched off). `DELETE /api/telegram/link` +
+    "Unlink Telegram" in Settings remove the link.
+- Prices: server-side prices come from Binance's 24h ticker and a pair whose
+  ticker has not updated for 15 minutes (a halted pair) counts as no price, so
+  nothing is recorded, filled or scored on it. MATIC / MKR / EOS (halted on
+  Binance) were replaced by POL / SKY / ETC in `src/lib/coins.ts`. A BUY/SELL
+  call that ends exactly flat now scores as a loss, not a win.
+- Card and crypto Pro are mutually exclusive: card checkout is refused while
+  any Pro is active, and a crypto payment that lands on an active card
+  subscriber is not applied (reported for a manual refund).
 - Analyst reads are built only from server-side market data; the web route no
   longer forwards a client signal into the shared, cached take.
 - Stripe `customer.subscription.created/updated` re-reads the live subscription

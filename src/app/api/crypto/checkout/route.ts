@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { reportError } from '@/lib/server/report-error';
-import { expectedCryptoPriceUsd, isCryptoPlan } from '@/lib/subscription-rules';
+import { expectedCryptoPriceUsd, hasActiveCardSubscription } from '@/lib/subscription-rules';
+import { rateLimit } from '@/lib/server/rate-limit';
 import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 export const dynamic = 'force-dynamic';
@@ -32,6 +33,15 @@ export async function POST(request: NextRequest) {
     }
     const user = userData.user;
 
+    // Every call creates a NOWPayments invoice on our API key.
+    const rl = await rateLimit('crypto-checkout', user.id, 5, 60);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { available: false, reason: 'rate_limited' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+      );
+    }
+
     const body = await request.json().catch(() => null);
     const interval: 'monthly' | 'yearly' = body?.billingInterval === 'yearly' ? 'yearly' : 'monthly';
     // Price is server-authoritative (never trust a client-supplied amount). The
@@ -40,12 +50,14 @@ export async function POST(request: NextRequest) {
 
     // An active card subscriber would be paying twice — point them at billing
     // instead. A crypto Pro may pay again: the webhook extends their period.
-    const { data: profile } = await db
+    // Fail closed if the plan can't be read.
+    const { data: profile, error: profileErr } = await db
       .from('profiles')
       .select('subscription_status, plan_id')
       .eq('id', user.id)
       .maybeSingle();
-    if (profile?.subscription_status === 'pro' && profile.plan_id && !isCryptoPlan(profile.plan_id)) {
+    if (profileErr) throw new Error(profileErr.message);
+    if (profile && hasActiveCardSubscription({ status: profile.subscription_status, planId: profile.plan_id, currentPeriodEnd: null })) {
       return NextResponse.json({ available: false, reason: 'already_subscribed' }, { status: 409 });
     }
 

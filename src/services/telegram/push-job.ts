@@ -26,6 +26,8 @@ export interface PushJobDeps {
   generateDeadline: number;
   /** Pause between chats — stays well under Telegram's ~30 msg/s bot limit. */
   delayMs?: number;
+  /** Server error reporter, used when the honesty guardrail had to edit a read. */
+  reportError?: (context: string, error: unknown) => Promise<void>;
 }
 
 export interface PushJobResult {
@@ -165,7 +167,21 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
     }
 
     try {
-      await deps.send(chatId, formatPushDigest({ items, riskLevel: prefs.riskLevel, verifyUrl: deps.verifyUrl }));
+      const guardrailHits: string[] = [];
+      const text = formatPushDigest({
+        items,
+        riskLevel: prefs.riskLevel,
+        verifyUrl: deps.verifyUrl,
+        onBannedPhrase: fields => { guardrailHits.push(...fields); },
+      });
+      if (guardrailHits.length && deps.reportError) {
+        try {
+          await deps.reportError('telegram.push.guardrail', new Error(`banned phrase removed from digest: ${guardrailHits.join(', ')}`));
+        } catch {
+          /* reporting must never block a push */
+        }
+      }
+      await deps.send(chatId, text);
       result.sent += 1;
     } catch (e) {
       if (isChatUnreachable(e)) {

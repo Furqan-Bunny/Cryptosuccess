@@ -44,6 +44,14 @@ export default function MetricStrip({
 }) {
   const isPro = isProSubscription(profile?.subscription);
   const signalsLeft = profile ? remainingFreeSignals(profile.subscription) : null;
+  // A win rate only means something once calls have been scored (24h after
+  // they are made); pending calls alone must not read as a 0% record.
+  const scored = stats ? stats.wins + stats.losses : 0;
+  const winRateSub = !stats || stats.total === 0
+    ? 'No signals yet'
+    : scored > 0
+      ? `${stats.wins}W · ${stats.losses}L`
+      : `${stats.pending} pending · scored after 24h`;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -56,8 +64,8 @@ export default function MetricStrip({
       <Metric
         icon={<FaTrophy />}
         label="Signal win rate"
-        value={stats && stats.total > 0 ? `${stats.winRate.toFixed(0)}%` : '—'}
-        sub={stats && stats.total > 0 ? `${stats.wins}W · ${stats.losses}L` : 'No signals yet'}
+        value={scored > 0 && stats ? `${stats.winRate.toFixed(0)}%` : '—'}
+        sub={winRateSub}
       />
       <Metric
         icon={<FaWallet />}

@@ -2,6 +2,7 @@
 // validation (no I/O) so the rules are unit-tested; the DB enforces the same
 // shape with CHECK constraints (migration 0010).
 import { isSupportedCoin } from '@/lib/coins';
+import { MAX_RISK_PCT } from '@/lib/risk-rules';
 import type { ChatPrefs, RiskLevel } from './types';
 
 export const RISK_LEVELS: RiskLevel[] = ['low', 'medium', 'high'];
@@ -23,8 +24,8 @@ export const RISK_BUDGET: Record<RiskLevel, { minPct: number; maxPct: number }> 
   high: { minPct: 2, maxPct: 2 },
 };
 
-/** Absolute per-trade risk ceiling, whatever the user's setting. */
-export const MAX_RISK_PCT = 2;
+/** Absolute per-trade risk ceiling, whatever the user's setting (shared with the web). */
+export { MAX_RISK_PCT };
 
 export function isRiskLevel(v: unknown): v is RiskLevel {
   return typeof v === 'string' && (RISK_LEVELS as string[]).includes(v);

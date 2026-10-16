@@ -8,6 +8,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { fetchSpotPrices } from '@/lib/server/binance-server';
 import { TRADING_FEE_PERCENTAGE } from '@/types/trading.types';
 import { isLiquidated } from '@/lib/futures';
+import { isSupportedCoin } from '@/lib/coins';
 import { hasSufficientHolding, LedgerTrade } from './holdings';
 
 export interface EngineTickResult {
@@ -37,6 +38,25 @@ async function fetchLedger(db: Db, userId: string, symbol: string): Promise<Ledg
       .order('id', { ascending: true })
       .range(from, from + LEDGER_PAGE - 1);
     if (error) throw new Error(error.message);
+    rows.push(...(data ?? []));
+    if (!data || data.length < LEDGER_PAGE) return rows;
+  }
+}
+
+// Every row in `table` with the given status, paged in a stable order (by id)
+// so nothing past the API row cap is skipped. Without this, one user holding
+// 1000+ open rows would push everyone else's orders and positions out of the
+// scan, and their stops / liquidations would silently never run.
+async function fetchAllWithStatus(db: Db, table: 'orders' | 'futures_positions', status: string): Promise<any[]> {
+  const rows: any[] = [];
+  for (let from = 0; ; from += LEDGER_PAGE) {
+    const { data, error } = await db
+      .from(table)
+      .select('*')
+      .eq('status', status)
+      .order('id', { ascending: true })
+      .range(from, from + LEDGER_PAGE - 1);
+    if (error) throw new Error(`${table} read failed: ${error.message}`);
     rows.push(...(data ?? []));
     if (!data || data.length < LEDGER_PAGE) return rows;
   }
@@ -130,12 +150,27 @@ function appendNote(existing: string | null, note: string): string {
 }
 
 async function processOrders(db: Db, result: EngineTickResult) {
-  const { data: rows } = await db.from('orders').select('*').eq('status', 'pending');
-  const orders = (rows ?? []).map(mapOrder);
+  const orders = (await fetchAllWithStatus(db, 'orders', 'pending')).map(mapOrder);
   result.ordersScanned += orders.length;
   if (orders.length === 0) return;
 
-  const conditional = orders.filter(o => o.type !== 'market');
+  // Orders are written by the client, so the symbol is untrusted. One outside the
+  // coin catalogue can never be priced (and a flood of made-up symbols would turn
+  // the batched price lookup into one request per symbol): cancel it.
+  const conditional: ReturnType<typeof mapOrder>[] = [];
+  for (const o of orders) {
+    if (o.type === 'market') continue;
+    if (isSupportedCoin(o.symbol)) {
+      conditional.push(o);
+      continue;
+    }
+    const cancelled = await transitionPendingOrder(db, o.id, {
+      status: 'cancelled',
+      notes: appendNote(o.notes, 'Cancelled by engine: coin not supported'),
+      updated_at: new Date().toISOString(),
+    });
+    if (cancelled) result.ordersCancelled += 1;
+  }
   const symbols = Array.from(new Set(conditional.map(o => o.symbol)));
   const prices = await fetchSpotPrices(symbols);
   const now = Date.now();
@@ -231,8 +266,7 @@ async function processOrders(db: Db, result: EngineTickResult) {
 }
 
 async function processFutures(db: Db, result: EngineTickResult) {
-  const { data: rows } = await db.from('futures_positions').select('*').eq('status', 'open');
-  const positions = rows ?? [];
+  const positions = await fetchAllWithStatus(db, 'futures_positions', 'open');
   result.positionsScanned += positions.length;
   if (positions.length === 0) return;
 
@@ -276,7 +310,20 @@ export async function runEngineTick(): Promise<EngineTickResult> {
     positionsScanned: 0,
     positionsLiquidated: 0,
   };
-  await processOrders(db, result);
-  await processFutures(db, result);
+  // A failure in one half must not stop the other (a broken orders read would
+  // otherwise also stop liquidations). Both run; the first error is re-thrown so
+  // the cron monitor records and reports the run as failed.
+  let firstError: unknown = null;
+  try {
+    await processOrders(db, result);
+  } catch (e) {
+    firstError = e;
+  }
+  try {
+    await processFutures(db, result);
+  } catch (e) {
+    firstError = firstError ?? e;
+  }
+  if (firstError) throw firstError;
   return result;
 }

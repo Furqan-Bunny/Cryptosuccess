@@ -38,9 +38,13 @@ The Telegram signal path (`webhook/route.ts`, `analyst.service.ts`) needs all of
 | `ANTHROPIC_API_KEY` | AI analyst | real `sk-ant-…` key |
 | `TELEGRAM_BOT_TOKEN` | send replies | BotFather token |
 | `TELEGRAM_WEBHOOK_SECRET` | verify webhook + `/api/telegram/setup` | any strong secret |
+| `NEXT_PUBLIC_APP_URL` | public links, payment return URLs, webhook registration | the public `https://` URL of the deployment (`/api/telegram/setup` refuses to run without it) |
+| `CRON_SECRET` | authorizes every cron route (signal scoring, anchoring, follow-ups, alerts, engine) | any strong secret — in production every cron call is refused without it |
 
-Optional: `NEXT_PUBLIC_APP_URL` (public https URL). If unset, the code derives
-the base URL from the request host, so it still works.
+The scheduler workflow (`.github/workflows/scheduler.yml`) also needs two
+GitHub repository secrets: `APP_URL` (same value as `NEXT_PUBLIC_APP_URL`) and
+`CRON_SECRET` (same value as the deployment's `CRON_SECRET`). Without them the
+24h scoring, daily anchoring and Telegram follow-ups never run.
 
 The real values are the boss-provided keys already in the local `.env.local`
 (do NOT rotate them). They are intentionally **not** committed to git.
@@ -50,13 +54,21 @@ The real values are the boss-provided keys already in the local `.env.local`
 
 ## Deploy steps (owner's Vercel, from GitHub)
 
-1. Set all six env vars above for **Production** (correct values, no placeholders).
-2. Deploy the `main` branch (Git integration, or `vercel deploy --prod`).
-3. Wait for the build to reach **Ready**.
-4. Register the Telegram webhook once:
+1. Set all the env vars above for **Production** (correct values, no placeholders),
+   and the `APP_URL` / `CRON_SECRET` GitHub secrets.
+2. Apply the database migrations BEFORE deploying: run every file in
+   `supabase/migrations/` that is not applied yet, in numeric order (0008 → 0014
+   on a database that already has 0001–0007), or `supabase/ALL_MIGRATIONS.sql` on
+   a fresh database. 0012, 0013 and 0014 must be in place before the matching
+   code goes live: without them `/api/track-record` (and the record on `/verify`)
+   returns 503, the staking / futures functions are missing and Telegram unlink
+   fails.
+3. Deploy the `main` branch (Git integration, or `vercel deploy --prod`).
+4. Wait for the build to reach **Ready**.
+5. Register the Telegram webhook once:
    `curl -X POST https://<your-app>/api/telegram/setup -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>"`
    (`NEXT_PUBLIC_APP_URL` must be the public https URL in production).
-5. Test in Telegram: `/start`, then `/signal BTC`. A coached signal (not the
+6. Test in Telegram: `/start`, then `/signal BTC`. A coached signal (not the
    "still being set up" message) means everything is wired correctly.
 
 ## Sanity checks

@@ -59,6 +59,8 @@ export interface LinkResult {
 export interface RecordedSignal {
   id: string;
   price: number;
+  /** The action actually stored (a stay-out read is stored as HOLD). */
+  action: 'BUY' | 'SELL' | 'HOLD';
 }
 
 /**

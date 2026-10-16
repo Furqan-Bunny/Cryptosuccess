@@ -90,6 +90,9 @@ export async function POST(request: NextRequest) {
     if (/insufficient paper balance/i.test(error.message)) {
       return NextResponse.json({ ok: false, reason: 'insufficient_balance' }, { status: 409 });
     }
+    if (/too many open positions/i.test(error.message)) {
+      return NextResponse.json({ ok: false, reason: 'too_many_positions' }, { status: 409 });
+    }
     await reportError('paper.futures.open', error, { route: ROUTE });
     return NextResponse.json({ ok: false, reason: 'open_failed' }, { status: 500 });
   }

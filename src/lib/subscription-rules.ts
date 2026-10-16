@@ -43,6 +43,36 @@ export function isEffectivePro(state: ProfileSubscriptionState, nowMs: number = 
 }
 
 /**
+ * Is the profile on a card (Stripe) subscription that Stripe is still billing?
+ * Card Pro stores the subscription id as plan_id; crypto Pro stores crypto_*.
+ * The two providers are kept mutually exclusive: a crypto payment must never
+ * overwrite a live card subscription (the user could no longer reach Manage
+ * Billing to cancel it), and card checkout is refused while either is active.
+ */
+export function hasActiveCardSubscription(state: ProfileSubscriptionState): boolean {
+  return state.status === 'pro' && typeof state.planId === 'string' && state.planId.length > 0 && !isCryptoPlan(state.planId);
+}
+
+/**
+ * Would a card activation replace crypto Pro time the user has already paid
+ * for? Only possible in a race (a crypto invoice confirming while a card
+ * checkout was open); the webhook then keeps the later period end and reports
+ * it so the unused crypto days can be refunded.
+ */
+export function replacesActiveCryptoPro(state: ProfileSubscriptionState | null | undefined, nowMs: number = Date.now()): boolean {
+  return !!state && isCryptoPlan(state.planId) && isEffectivePro(state, nowMs);
+}
+
+/** The later of two ISO timestamps (either may be missing). */
+export function laterIso(a: string | null | undefined, b: string | null | undefined): string | null {
+  const ta = parseTime(a);
+  const tb = parseTime(b);
+  if (ta == null) return tb == null ? null : (b as string);
+  if (tb == null) return a as string;
+  return tb > ta ? (b as string) : (a as string);
+}
+
+/**
  * New period end for a crypto payment. If the user is already Pro with a period
  * end still in the future, the purchase EXTENDS that period (paying early must
  * never forfeit the days already bought); otherwise it starts now.

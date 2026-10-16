@@ -24,15 +24,15 @@ coach." Built on top of the existing signal engine (§3), nothing in §3 was rew
 | `supabase/migrations/0007_telegram_users.sql` | `telegram_users`, link codes, `consume_telegram_signal` (Free 5/day, linked-Pro unlimited), `redeem_telegram_link` |
 | `supabase/migrations/0008_telegram_shared_quota.sql` | Linked chats share the account's web allowance (`consume_signal`) instead of a second 5/day bucket |
 | `src/services/bot/record.ts` | Turns a linked chat's read into a `signals` row (fresh live entry, parsed + direction-checked levels) so it is scored and anchored like web signals |
-| `src/components/settings/TelegramLinkCard.tsx` | Settings → Telegram: mints the one-time `/link` code |
+| `src/components/settings/TelegramLinkCard.tsx` | Settings → Telegram: mints the one-time `/link` code and unlinks the chat |
 | `.github/workflows/scheduler.yml` | Hourly engine tick + signal evaluation (Hobby crons are daily-only) |
 | `scripts/set-telegram-webhook.ts` | Alternative CLI webhook registration |
 | `tests/unit/telegram-format.test.ts` | Tests locking the honest-coach guardrails |
-| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0012 combined for one paste (generated) |
+| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0014 combined for one paste (generated) |
 
 ## To make `/signal` work (for the reviewer deploying to the real project)
 1. **Supabase** — create a project; in the SQL Editor run `supabase/ALL_MIGRATIONS.sql`
-   (migrations 0001→0012). If some are already applied, run only the missing files from `supabase/migrations/` in numeric order. Copy the Project URL, `anon` key, and `service_role` key.
+   (migrations 0001→0014). If some are already applied, run only the missing files from `supabase/migrations/` in numeric order. Copy the Project URL, `anon` key, and `service_role` key.
 2. **Anthropic** — create an API key (`sk-ant-…`) with a little billing credit.
 3. **Set env vars** (Vercel → Project → Settings → Environment Variables), then redeploy:
    - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (already set on the demo deploy)

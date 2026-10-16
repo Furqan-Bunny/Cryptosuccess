@@ -3,7 +3,12 @@ import Stripe from 'stripe';
 import { headers } from 'next/headers';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServiceClient } from '@/lib/supabase/server';
-import { mapStripeStatus, stripePeriodEndIso } from '@/lib/subscription-rules';
+import {
+  mapStripeStatus,
+  replacesActiveCryptoPro,
+  stripePeriodEndIso,
+  type ProfileSubscriptionState,
+} from '@/lib/subscription-rules';
 import {
   asUuid,
   checkoutActivationPatch,
@@ -46,6 +51,31 @@ async function updateProfile(db: SupabaseClient, userId: string, patch: Record<s
   const { error } = await db.from('profiles').update(patch).eq('id', userId);
   // Throw so the idempotency claim is released and Stripe retries the event.
   if (error) throw new Error(`profile update failed: ${error.message}`);
+}
+
+// The profile's plan as it is now, before a card activation is written.
+async function readSubscriptionState(db: SupabaseClient, userId: string): Promise<ProfileSubscriptionState | null> {
+  const { data, error } = await db
+    .from('profiles')
+    .select('subscription_status, plan_id, current_period_end')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+  return { status: data.subscription_status, planId: data.plan_id, currentPeriodEnd: data.current_period_end };
+}
+
+// A card subscription is taking over from crypto Pro that still has paid time
+// left (a crypto invoice confirmed while a card checkout was open; checkout
+// refuses this otherwise). The card plan must win so the user can manage and
+// cancel it, but the crypto days were paid for: flag it for a manual refund.
+async function reportCryptoOverlap(userId: string, eventId: string, existing: ProfileSubscriptionState | null) {
+  if (!replacesActiveCryptoPro(existing)) return;
+  await reportError('stripe.webhook', new Error('Card subscription replaced active crypto Pro; refund the unused crypto days'), {
+    route: ROUTE,
+    eventId,
+    userId,
+  });
 }
 
 // Whether a subscription event may change this profile: the profile must be on
@@ -147,11 +177,13 @@ export async function POST(request: NextRequest) {
           periodEnd = stripePeriodEndIso(subscription);
         }
 
+        const existing = await readSubscriptionState(db, userId);
         await updateProfile(
           db,
           userId,
-          checkoutActivationPatch({ customerId: idOf(session.customer), subscriptionId, periodEnd })
+          checkoutActivationPatch({ customerId: idOf(session.customer), subscriptionId, periodEnd, existing })
         );
+        await reportCryptoOverlap(userId, event.id, existing);
         console.log(`Subscription activated for user: ${userId}`);
         break;
       }
@@ -169,11 +201,13 @@ export async function POST(request: NextRequest) {
         const userId = await resolveUserId(db, subscription.metadata?.userId, customerId);
         if (!userId) break;
 
+        const existing = await readSubscriptionState(db, userId);
         const change = subscriptionChange({
           status: subscription.status,
           subscriptionId: subscription.id,
           customerId,
           periodEnd: stripePeriodEndIso(subscription),
+          existing,
         });
         if (change.kind === 'none') {
           // e.g. `incomplete`: first payment still pending — leave access as is.
@@ -183,6 +217,7 @@ export async function POST(request: NextRequest) {
 
         if (change.kind === 'pro') {
           await updateProfile(db, userId, change.patch);
+          await reportCryptoOverlap(userId, event.id, existing);
         } else if (await profileTracksSubscription(db, userId, subscription.id)) {
           await updateProfile(db, userId, change.patch);
         }

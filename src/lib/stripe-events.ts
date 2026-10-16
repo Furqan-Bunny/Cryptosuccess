@@ -1,7 +1,7 @@
 // Pure pieces of the Stripe webhook (/api/stripe/webhook): who an event belongs
 // to and what it does to the profile row. No I/O here so the mapping is unit-
 // tested against the real code; the route only verifies, reads and writes.
-import { mapStripeStatus } from '@/lib/subscription-rules';
+import { laterIso, mapStripeStatus, replacesActiveCryptoPro, type ProfileSubscriptionState } from '@/lib/subscription-rules';
 import { isUuid } from '@/lib/uuid';
 
 export function asUuid(value: unknown): string | null {
@@ -43,23 +43,28 @@ export type SubscriptionChange =
  *   canceled | unpaid | …        → Free (the route applies it only when the
  *     profile still tracks THIS subscription)
  *   incomplete / unknown         → no change
+ * `existing` is the profile as it is now: if it still holds paid-up crypto Pro,
+ * its period end is never shortened (see proPeriodEnd).
  */
 export function subscriptionChange(input: {
   status: string | null | undefined;
   subscriptionId: string;
   customerId: string | null;
   periodEnd: string | null;
+  existing?: ProfileSubscriptionState | null;
+  now?: Date;
 }): SubscriptionChange {
   const mapped = mapStripeStatus(input.status);
   if (mapped == null) return { kind: 'none' };
   if (mapped === 'pro') {
+    const periodEnd = proPeriodEnd(input.periodEnd, input.existing, input.now);
     return {
       kind: 'pro',
       patch: {
         subscription_status: 'pro',
         plan_id: input.subscriptionId,
         ...(input.customerId ? { customer_id: input.customerId } : {}),
-        ...(input.periodEnd ? { current_period_end: input.periodEnd } : {}),
+        ...(periodEnd ? { current_period_end: periodEnd } : {}),
       },
     };
   }
@@ -69,18 +74,34 @@ export function subscriptionChange(input: {
   };
 }
 
+/**
+ * Period end to store when a card subscription becomes the profile's plan. The
+ * card plan takes over plan_id (so the user can manage / cancel it), but if the
+ * profile still holds crypto Pro time that was paid for, the later end is kept
+ * rather than cutting that time short.
+ */
+export function proPeriodEnd(
+  stripePeriodEnd: string | null,
+  existing: ProfileSubscriptionState | null | undefined,
+  now: Date = new Date()
+): string | null {
+  if (!replacesActiveCryptoPro(existing, now.getTime())) return stripePeriodEnd;
+  return laterIso(existing?.currentPeriodEnd, stripePeriodEnd);
+}
+
 /** Profile patch for a completed, paid Pro checkout. */
 export function checkoutActivationPatch(input: {
   customerId: string | null;
   subscriptionId: string | null;
   periodEnd: string | null;
+  existing?: ProfileSubscriptionState | null;
   now?: Date;
 }): Record<string, unknown> {
   return {
     subscription_status: 'pro',
     customer_id: input.customerId,
     plan_id: input.subscriptionId,
-    current_period_end: input.periodEnd,
+    current_period_end: proPeriodEnd(input.periodEnd, input.existing, input.now),
     signals_used_today: 0,
     last_reset_date: (input.now ?? new Date()).toISOString(),
   };

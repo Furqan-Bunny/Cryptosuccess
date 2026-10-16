@@ -14,7 +14,7 @@ const STAKEABLE: { symbol: string; match: string[]; fallbackApy: number }[] = [
   { symbol: 'ETH', match: ['STETH', 'WSTETH'], fallbackApy: 3.2 },
   { symbol: 'SOL', match: ['MSOL', 'JITOSOL', 'BSOL'], fallbackApy: 6.5 },
   { symbol: 'BNB', match: ['ANKRBNB', 'SLISBNB', 'BNBX'], fallbackApy: 2.0 },
-  { symbol: 'MATIC', match: ['STMATIC', 'MATICX'], fallbackApy: 4.0 },
+  { symbol: 'POL', match: ['STPOL', 'POL', 'STMATIC', 'MATICX'], fallbackApy: 4.0 },
   { symbol: 'ADA', match: ['ADA'], fallbackApy: 2.8 },
   { symbol: 'DOT', match: ['DOT'], fallbackApy: 11.0 },
   { symbol: 'ATOM', match: ['STATOM', 'ATOM'], fallbackApy: 14.0 },

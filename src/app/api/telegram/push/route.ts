@@ -7,6 +7,7 @@ import { isTelegramConfigured, sendMessage } from '@/lib/telegram/api';
 import { isAnalystConfigured, isSupabaseConfigured, resolveBaseUrl } from '@/lib/telegram/env';
 import { generateAnalystTake } from '@/services/analyst.service';
 import { runPushJob } from '@/services/telegram/push-job';
+import { reportError } from '@/lib/server/report-error';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -40,6 +41,7 @@ async function handler(request: NextRequest) {
       startDeadline: started + START_BUDGET_MS,
       generateDeadline: started + GENERATE_BUDGET_MS,
       delayMs: DELAY_BETWEEN_CHATS_MS,
+      reportError: (context, error) => reportError(context, error, { route: '/api/telegram/push', level: 'warn' }),
     });
     return NextResponse.json({ ok: true, ...result });
   });

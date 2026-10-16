@@ -10,6 +10,7 @@ import { getHorizon, DEFAULT_HORIZON } from '@/lib/horizons';
 import type { MtfResult } from './ai/mtf-confirmation';
 import type { Indicators } from '@/components/market/IndicatorPanel';
 import { levelStats, type PriceLevels } from '@/lib/recorded-levels';
+import { buildRiskNote } from '@/lib/risk-rules';
 
 export interface SignalNarrative {
   summary: string;
@@ -105,10 +106,16 @@ function buildNarrative(
     `${symbol} is showing a ${signal.action} setup with ${signal.confidence}% confidence. ` +
     `${regime.description}. ${bullish.length} factors support a ${verb}, ${bearish.length} urge caution.`;
 
-  const riskNote =
-    `${symbol} carries ${profile.volatilityClass} volatility (ATR ≈ ${profile.typicalATRPercent}% of price). ` +
-    `Risk no more than ~${profile.maxPositionSizePct}% of your portfolio on this idea, with the stop at ` +
-    `${marketService.formatPrice(signal.stopLoss)} (${potentialLossPct.toFixed(1)}% from entry).`;
+  // Position size (maxPositionSizePct) and risk (1–2% lost at the stop) are
+  // separate numbers; buildRiskNote keeps them apart.
+  const riskNote = buildRiskNote({
+    symbol,
+    volatilityClass: profile.volatilityClass,
+    typicalATRPercent: profile.typicalATRPercent,
+    maxPositionSizePct: profile.maxPositionSizePct,
+    stopLabel: marketService.formatPrice(signal.stopLoss),
+    stopDistancePct: potentialLossPct,
+  });
 
   return { summary, bullish, bearish, riskNote };
 }

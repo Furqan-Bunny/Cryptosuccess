@@ -21,6 +21,15 @@ export interface OutcomeResult {
   profitLossPercent: number;
 }
 
+// A directional call only counts as a win when price actually moved its way. A
+// flat result (exactly 0%) is not a win: real fees make it a small loss, and a
+// zero move is also what a frozen / halted price produces, which must never
+// inflate the record. Only BUY/SELL scoring changes; already-scored rows (and
+// their anchored leaves) are never re-scored.
+export function isDirectionalWin(profitLossPercent: number): boolean {
+  return profitLossPercent > 0;
+}
+
 // Pure: same (signal, currentPrice) always yields the same outcome + P/L.
 // Mirrors the original inline logic in signal-history.service.evaluateSignal.
 export function deriveOutcome(signal: OutcomeInput, currentPrice: number): OutcomeResult {
@@ -31,12 +40,12 @@ export function deriveOutcome(signal: OutcomeInput, currentPrice: number): Outco
   if (signal.action === 'BUY') {
     if (currentPrice >= signal.targetPrice) outcome = 'hit_target';
     else if (currentPrice <= signal.stopLoss) outcome = 'hit_stop';
-    else outcome = profitLossPercent >= 0 ? 'expired_profit' : 'expired_loss';
+    else outcome = isDirectionalWin(profitLossPercent) ? 'expired_profit' : 'expired_loss';
   } else if (signal.action === 'SELL') {
     if (currentPrice <= signal.targetPrice) outcome = 'hit_target';
     else if (currentPrice >= signal.stopLoss) outcome = 'hit_stop';
     // profitLossPercent is already direction-adjusted, so the test matches BUY.
-    else outcome = profitLossPercent >= 0 ? 'expired_profit' : 'expired_loss';
+    else outcome = isDirectionalWin(profitLossPercent) ? 'expired_profit' : 'expired_loss';
   } else {
     // HOLD is non-directional; always scores as a (neutral) profit and is
     // excluded from the win-rate elsewhere.

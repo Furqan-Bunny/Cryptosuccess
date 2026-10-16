@@ -19,6 +19,7 @@ import {
   computeRoe,
   MAX_LEVERAGE,
   MIN_LEVERAGE,
+  MIN_MARGIN_USD,
 } from '@/lib/futures';
 import { FaBolt } from 'react-icons/fa';
 import toast from 'react-hot-toast';
@@ -73,8 +74,8 @@ function FuturesPageInner() {
   const handleOpen = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    if (margin <= 0) {
-      toast.error('Enter a valid margin');
+    if (margin < MIN_MARGIN_USD) {
+      toast.error(`Margin must be at least $${MIN_MARGIN_USD}`);
       return;
     }
     setSubmitting(true);
@@ -95,7 +96,10 @@ function FuturesPageInner() {
   const handleClose = async (id?: string) => {
     if (!user || !id) return;
     const res = await futuresService.closePosition(user.uid, id);
-    if (res.success) {
+    if (res.liquidated) {
+      toast.error(`Price had already passed the liquidation level · margin lost (${marketService.formatPrice(res.realizedPnl || 0)})`);
+      await load();
+    } else if (res.success) {
       toast.success(`Closed · PnL ${marketService.formatPrice(res.realizedPnl || 0)}`);
       await load();
     } else {
@@ -181,7 +185,7 @@ function FuturesPageInner() {
                 <label className="block text-sm text-text-secondary mb-2">Margin (USD)</label>
                 <input
                   type="number"
-                  min="1"
+                  min={MIN_MARGIN_USD}
                   step="1"
                   value={marginUsd}
                   onChange={e => setMarginUsd(e.target.value)}
@@ -270,9 +274,14 @@ function FuturesPageInner() {
                         {pos.symbol} {pos.side} {pos.leverage}x{' '}
                         {pos.status === 'liquidated' && <span className="text-red-400">· liquidated</span>}
                       </span>
-                      <span className={(pos.realizedPnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {(pos.realizedPnl ?? 0) >= 0 ? '+' : ''}{marketService.formatPrice(pos.realizedPnl ?? 0)}
-                      </span>
+                      {pos.status === 'closed' && pos.realizedPnl == null ? (
+                        // Closed without a settlement: forfeited by a paper-account reset.
+                        <span className="text-text-secondary">Voided (paper reset)</span>
+                      ) : (
+                        <span className={(pos.realizedPnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          {(pos.realizedPnl ?? 0) >= 0 ? '+' : ''}{marketService.formatPrice(pos.realizedPnl ?? 0)}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>

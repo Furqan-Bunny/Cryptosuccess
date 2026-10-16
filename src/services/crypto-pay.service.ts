@@ -24,6 +24,7 @@ class CryptoPayService {
     const data = await resp.json().catch(() => null);
     if (!resp.ok || typeof data?.url !== 'string') {
       if (data?.reason === 'not_configured') throw new Error('Crypto payments are not enabled');
+      if (data?.reason === 'rate_limited') throw new Error('Too many attempts. Please wait a minute and try again.');
       if (data?.reason === 'already_subscribed') {
         throw new Error('You already have an active card subscription — manage it from Settings.');
       }

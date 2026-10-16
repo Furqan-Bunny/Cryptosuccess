@@ -5,7 +5,7 @@
 // in. Pure (no I/O) so every rule here is unit-tested.
 
 import { isSupportedCoin } from '@/lib/coins';
-import { MAX_LEVERAGE, MIN_LEVERAGE, type PositionSide } from '@/lib/futures';
+import { MAX_LEVERAGE, MIN_LEVERAGE, MIN_MARGIN_USD, type PositionSide } from '@/lib/futures';
 import { isUuid } from '@/lib/uuid';
 
 // Sanity ceiling on a single margin amount. Far above any real paper balance;
@@ -42,7 +42,7 @@ export function validateOpenFuturesInput(body: unknown): PaperInputResult<OpenFu
   if (typeof leverage !== 'number' || !Number.isFinite(leverage) || leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE) {
     return { ok: false, error: 'invalid_leverage' };
   }
-  if (typeof marginUsd !== 'number' || !Number.isFinite(marginUsd) || marginUsd <= 0 || marginUsd > MAX_PAPER_AMOUNT_USD) {
+  if (typeof marginUsd !== 'number' || !Number.isFinite(marginUsd) || marginUsd < MIN_MARGIN_USD || marginUsd > MAX_PAPER_AMOUNT_USD) {
     return { ok: false, error: 'invalid_margin' };
   }
 

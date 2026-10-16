@@ -9,7 +9,8 @@
 //   • Provably honest — every signal links the on-chain /verify track record, and
 //     only calls that were actually recorded claim to be.
 //   • Teaches — short reasoning + position-sizing guidance (never above 2% risk).
-//   • Never "guaranteed" / "100x" / promises of profit.
+//   • Never "guaranteed" / "100x" / promises of profit — enforced at runtime on
+//     the model's own text too (sanitizeTake), not only on our fixed copy.
 import type { AnalystTake } from '@/services/analyst.service';
 import type { SignalOutcome } from '@/lib/signal-outcome';
 import { getCoinName } from '@/lib/coins';
@@ -18,6 +19,69 @@ import type { AccountStatus, ChatPrefs, NotRecordedReason, RiskLevel } from './t
 
 /** Words we must never emit — the honest-coach promise. */
 export const BANNED_PHRASES = ['guaranteed', 'guarantee', '100x', 'to the moon', 'risk-free', 'can\'t lose', 'cannot lose', 'sure thing'];
+
+/** Shown instead of model reasoning that broke the guardrail. */
+export const WITHHELD_REASONING = 'Reasoning withheld — see the levels and risk block.';
+const WITHHELD_FIELD = 'n/a';
+
+/** Case-insensitive; curly apostrophes and "×" are normalised first. */
+export function containsBannedPhrase(text: unknown): boolean {
+  if (typeof text !== 'string' || !text) return false;
+  const t = text.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\u00d7/g, 'x');
+  return BANNED_PHRASES.some(p => t.includes(p));
+}
+
+/**
+ * The analyst's text comes from a model that also reads web news, so a quote
+ * like "analysts eye a 100x" can reach it; a prompt instruction alone is not a
+ * guarantee. Before anything model-written is sent: a driver / risk item with a
+ * banned phrase is dropped, a thesis is replaced with WITHHELD_REASONING, and
+ * any other free-text field with "n/a". `flagged` names the fields that were
+ * changed, so the caller can report the prompt drift.
+ */
+export function sanitizeTake(analysis: AnalystTake): { analysis: AnalystTake; flagged: string[] } {
+  const flagged: string[] = [];
+  const text = (field: string, value: string, fallback: string): string => {
+    if (!containsBannedPhrase(value)) return value;
+    flagged.push(field);
+    return fallback;
+  };
+  const list = (field: string, items: string[] | undefined): string[] => {
+    const all = Array.isArray(items) ? items : [];
+    const kept = all.filter(i => !containsBannedPhrase(i));
+    if (kept.length !== all.length) flagged.push(field);
+    return kept;
+  };
+  const st = analysis.shortTerm;
+  const lt = analysis.longTerm;
+  return {
+    analysis: {
+      ...analysis,
+      newsSummary: text('newsSummary', analysis.newsSummary, WITHHELD_FIELD),
+      shortTerm: {
+        ...st,
+        horizon: text('shortTerm.horizon', st.horizon, 'short-term'),
+        thesis: text('shortTerm.thesis', st.thesis, WITHHELD_REASONING),
+        keyDrivers: list('shortTerm.keyDrivers', st.keyDrivers),
+        risks: list('shortTerm.risks', st.risks),
+        entryZone: text('shortTerm.entryZone', st.entryZone, WITHHELD_FIELD),
+        target: text('shortTerm.target', st.target, WITHHELD_FIELD),
+        stop: text('shortTerm.stop', st.stop, WITHHELD_FIELD),
+        invalidation: text('shortTerm.invalidation', st.invalidation, WITHHELD_FIELD),
+      },
+      longTerm: {
+        ...lt,
+        horizon: text('longTerm.horizon', lt.horizon, 'long-term'),
+        thesis: text('longTerm.thesis', lt.thesis, WITHHELD_REASONING),
+        keyDrivers: list('longTerm.keyDrivers', lt.keyDrivers),
+        risks: list('longTerm.risks', lt.risks),
+        keyLevels: text('longTerm.keyLevels', lt.keyLevels, WITHHELD_FIELD),
+        invalidation: text('longTerm.invalidation', lt.invalidation, WITHHELD_FIELD),
+      },
+    },
+    flagged,
+  };
+}
 
 const CONVICTION_LABEL: Record<string, string> = {
   low: 'Low (timeframes conflict / choppy — treat with caution)',
@@ -112,10 +176,20 @@ export function formatSignal(params: {
   recordedSignalId?: string | null;
   /** Why the call wasn't recorded (only the unlinked case is told to /link). */
   notRecordedReason?: NotRecordedReason | null;
+  /**
+   * The action the call was recorded AS. A HOLD or low-conviction read is
+   * recorded as a non-directional HOLD (see buildSignalRecord), which is never
+   * scored as a win or a loss, so it must not be described as a scored trade.
+   */
+  recordedAction?: 'BUY' | 'SELL' | 'HOLD' | null;
   /** The chat's risk setting; adapts the sizing line (capped at 2%). */
   riskLevel?: RiskLevel | null;
+  /** Called with the fields sanitizeTake had to change (guardrail hits). */
+  onBannedPhrase?: (fields: string[]) => void;
 }): string {
-  const { symbol, analysis, price, verifyUrl, remaining, recordedSignalId, notRecordedReason, riskLevel } = params;
+  const { symbol, price, verifyUrl, remaining, recordedSignalId, recordedAction, notRecordedReason, riskLevel } = params;
+  const { analysis, flagged } = sanitizeTake(params.analysis);
+  if (flagged.length) params.onBannedPhrase?.(flagged);
   const name = getCoinName(symbol);
   const st = analysis.shortTerm;
   const emoji = VERDICT_EMOJI[st.verdict] ?? '⚪';
@@ -158,7 +232,10 @@ export function formatSignal(params: {
   lines.push('');
 
   // Provably-honest hook — only claim on-chain recording for calls we actually recorded.
-  if (recordedSignalId) {
+  const recordedAsStayOut = recordedAction ? recordedAction === 'HOLD' : isStayOut(st);
+  if (recordedSignalId && recordedAsStayOut) {
+    lines.push(`🔗 Recorded in our track record as a stay-out (HOLD) call, at the live price: it is kept in the record, but it is not counted as a win or a loss → ${verifyUrl}?signalId=${recordedSignalId}`);
+  } else if (recordedSignalId) {
     lines.push(`🔗 This call is recorded in our track record. It is scored once, on the price 24h after the call (not over the whole horizon above); after that it is anchored on-chain, so we can't hide it if it loses → ${verifyUrl}?signalId=${recordedSignalId}`);
   } else {
     lines.push(`ℹ️ ${notRecordedLine(notRecordedReason)} Our verified track record → ${verifyUrl}`);
@@ -355,9 +432,13 @@ export function coinsErrorMessage(error: { kind: 'missing' } | { kind: 'unsuppor
   return `Usage: /coins BTC ETH SOL (up to ${MAX_COINS}).`;
 }
 
-export function alertsUsageMessage(enabled: boolean): string {
+// Alerts stay switched on when Pro lapses, but the push job skips non-Pro chats,
+// so "ON" alone would promise messages that never come.
+const ALERTS_PAUSED = 'ON (paused: needs Pro, see /subscribe)';
+
+export function alertsUsageMessage(enabled: boolean, paused = false): string {
   return [
-    `Daily alerts are ${enabled ? 'ON' : 'OFF'}.`,
+    `Daily alerts are ${enabled ? (paused ? ALERTS_PAUSED : 'ON') : 'OFF'}.`,
     'Send /alerts on or /alerts off.',
     'Alerts = at most one honest read per day on up to 3 of your /coins (Pro, linked account).',
   ].join('\n');
@@ -395,7 +476,7 @@ export function settingsMessage(prefs: ChatPrefs, account: AccountStatus): strin
     '⚙️ Your settings:',
     `• Risk level: ${RISK_EXPLAIN[prefs.riskLevel]}`,
     `• Coins: ${prefs.coins.join(', ')}`,
-    `• Daily alerts: ${prefs.alertsEnabled ? 'ON' : 'OFF'}`,
+    `• Daily alerts: ${prefs.alertsEnabled ? (account.pro ? 'ON' : ALERTS_PAUSED) : 'OFF'}`,
     `• Account: ${account.linked ? (account.pro ? 'linked (Pro)' : 'linked (Free)') : 'not linked — see /link'}`,
     '',
     'Change with /risk, /coins and /alerts.',
@@ -415,8 +496,19 @@ export interface PushItem {
  * level, and the message says plainly these reads are NOT in the track record
  * (pushes are not recorded as signals).
  */
-export function formatPushDigest(params: { items: PushItem[]; riskLevel: RiskLevel; verifyUrl: string }): string {
-  const { items, riskLevel, verifyUrl } = params;
+export function formatPushDigest(params: {
+  items: PushItem[];
+  riskLevel: RiskLevel;
+  verifyUrl: string;
+  /** Called with the fields sanitizeTake had to change (guardrail hits). */
+  onBannedPhrase?: (fields: string[]) => void;
+}): string {
+  const { riskLevel, verifyUrl } = params;
+  const items = params.items.map(item => {
+    const { analysis, flagged } = sanitizeTake(item.analysis);
+    if (flagged.length) params.onBannedPhrase?.(flagged.map(f => `${item.symbol}.${f}`));
+    return { ...item, analysis };
+  });
   const lines: string[] = [];
   lines.push(`🗞️ Your daily honest read — ${items.map(i => i.symbol).join(', ')}`);
   lines.push('(You turned daily alerts on. Send /alerts off to stop them any time.)');

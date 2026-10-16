@@ -184,8 +184,8 @@ export default function PrivacyPage() {
               <a href="mailto:privacy@cryptosuccess.com" className="text-primary hover:text-primary-light">
                 privacy@cryptosuccess.com
               </a>
-              . This includes asking us to unlink the Telegram bot from your account or to delete
-              your Telegram data.
+              . This includes asking us to delete your Telegram data. You can unlink the Telegram
+              bot from your account yourself at any time under Settings → Telegram.
             </p>
           </section>
 

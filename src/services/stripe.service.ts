@@ -61,8 +61,9 @@ class StripeService {
     if (!response.ok) {
       // Surface a user-safe reason; the route only returns short fixed strings.
       if (response.status === 409) {
-        throw new Error('You already have an active Pro subscription. Manage it from Settings.');
+        throw new Error('You already have Pro. Manage or extend it from Settings.');
       }
+      if (response.status === 429) throw new Error('Too many attempts. Please wait a minute and try again.');
       if (response.status === 400 || response.status === 503) {
         throw new Error('This plan is not available right now. Please try again later.');
       }

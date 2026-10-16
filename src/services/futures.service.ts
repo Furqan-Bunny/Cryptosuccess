@@ -4,6 +4,8 @@ import {
   PositionSide,
   MAX_LEVERAGE,
   MIN_LEVERAGE,
+  MIN_MARGIN_USD,
+  MAX_OPEN_POSITIONS,
 } from '@/lib/futures';
 
 export interface OpenPositionInput {
@@ -52,7 +54,8 @@ const OPEN_ERRORS: Record<string, string> = {
   price_unavailable: 'Could not fetch the entry price. Please try again.',
   pro_required: 'Futures are part of Pro.',
   invalid_leverage: `Leverage must be between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x`,
-  invalid_margin: 'Margin must be greater than 0',
+  invalid_margin: `Margin must be at least $${MIN_MARGIN_USD}`,
+  too_many_positions: `You can hold at most ${MAX_OPEN_POSITIONS} open positions. Close one first.`,
   invalid_symbol: 'This coin is not supported',
   rate_limited: 'Too many requests. Please wait a moment.',
   unauthorized: 'Your session has expired. Please sign in again.',
@@ -78,8 +81,8 @@ class FuturesService {
     if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE) {
       return { success: false, error: `Leverage must be between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x` };
     }
-    if (!Number.isFinite(marginUsd) || marginUsd <= 0) {
-      return { success: false, error: 'Margin must be greater than 0' };
+    if (!Number.isFinite(marginUsd) || marginUsd < MIN_MARGIN_USD) {
+      return { success: false, error: OPEN_ERRORS.invalid_margin };
     }
 
     try {
@@ -102,7 +105,7 @@ class FuturesService {
     }
   }
 
-  async closePosition(_uid: string, positionId: string): Promise<{ success: boolean; realizedPnl?: number; error?: string }> {
+  async closePosition(_uid: string, positionId: string): Promise<{ success: boolean; realizedPnl?: number; liquidated?: boolean; error?: string }> {
     try {
       const headers = await authHeaders();
       if (!headers) return { success: false, error: CLOSE_ERRORS.unauthorized };
@@ -117,7 +120,7 @@ class FuturesService {
         return { success: false, error: CLOSE_ERRORS[reason] ?? 'Failed to close position' };
       }
       const realizedPnl = Number(data.realizedPnl);
-      return { success: true, realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0 };
+      return { success: true, realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0, liquidated: data.liquidated === true };
     } catch (error: any) {
       console.error('Error closing futures position:', error);
       return { success: false, error: 'Failed to close position' };

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
 import { reportError } from '@/lib/server/report-error';
-import { resolveStripePriceId } from '@/lib/subscription-rules';
+import { isEffectivePro, resolveStripePriceId } from '@/lib/subscription-rules';
+import { rateLimit } from '@/lib/server/rate-limit';
 import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 function getStripe() {
@@ -33,6 +34,15 @@ export async function POST(request: NextRequest) {
     }
     const user = userData.user;
 
+    // Every call creates a Stripe Checkout Session on our API key.
+    const rl = await rateLimit('stripe-checkout', user.id, 5, 60);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+      );
+    }
+
     const body = await request.json().catch(() => null);
     const plan = body?.plan;
     const interval = body?.interval;
@@ -60,14 +70,24 @@ export async function POST(request: NextRequest) {
       sameOriginUrl(body?.successUrl, origin) ?? `${origin}${DEFAULT_SUCCESS_PATH}`;
     const cancelUrl = sameOriginUrl(body?.cancelUrl, origin) ?? `${origin}${DEFAULT_CANCEL_PATH}`;
 
-    // Don't sell a second subscription to an active subscriber; send them to the
-    // billing portal instead.
-    const { data: profile } = await db
+    // Don't sell a card subscription to anyone who is already Pro: a card
+    // subscriber belongs in the billing portal, and a crypto Pro's paid period
+    // would be overwritten by the card plan (card checkout opens once it lapses).
+    // Fail closed if the plan can't be read.
+    const { data: profile, error: profileErr } = await db
       .from('profiles')
-      .select('subscription_status, plan_id')
+      .select('subscription_status, plan_id, current_period_end')
       .eq('id', user.id)
       .maybeSingle();
-    if (profile?.subscription_status === 'pro' && profile.plan_id && !String(profile.plan_id).startsWith('crypto_')) {
+    if (profileErr) throw new Error(profileErr.message);
+    if (
+      profile &&
+      isEffectivePro({
+        status: profile.subscription_status,
+        planId: profile.plan_id,
+        currentPeriodEnd: profile.current_period_end,
+      })
+    ) {
       return NextResponse.json({ error: 'Already subscribed' }, { status: 409 });
     }
 

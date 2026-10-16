@@ -3,6 +3,10 @@
 // was previously duplicated across PriceCard, the market page, useMarketData and
 // the /api/market routes. This is the single source of truth for the tradable
 // universe — add a coin here and it propagates everywhere.
+//
+// Every symbol must be a Binance USDT pair whose status is TRADING. A halted pair
+// (status BREAK — MATIC, MKR and EOS after their token migrations) still answers
+// the price endpoints with a frozen price, so it must be replaced, not kept.
 
 export interface CoinMeta {
   symbol: string;
@@ -22,7 +26,7 @@ export const COINS: CoinMeta[] = [
   { symbol: 'XRP', name: 'Ripple', icon: '✕', supply: 100000000000 },
   { symbol: 'DOGE', name: 'Dogecoin', icon: '🐕', supply: 141000000000 },
   { symbol: 'DOT', name: 'Polkadot', icon: '●', supply: 1300000000 },
-  { symbol: 'MATIC', name: 'Polygon', icon: '⬡', supply: 10000000000 },
+  { symbol: 'POL', name: 'Polygon', icon: '⬡', supply: 10500000000 },
   { symbol: 'SHIB', name: 'Shiba Inu', icon: '🐕', supply: 589735000000000 },
   { symbol: 'TRX', name: 'TRON', icon: '⟁', supply: 87000000000 },
   { symbol: 'AVAX', name: 'Avalanche', icon: '🔺', supply: 440000000 },
@@ -48,7 +52,7 @@ export const COINS: CoinMeta[] = [
   { symbol: 'STX', name: 'Stacks', icon: '◳', supply: 1500000000 },
   { symbol: 'GRT', name: 'The Graph', icon: '◉', supply: 9500000000 },
   { symbol: 'AAVE', name: 'Aave', icon: '👻', supply: 15000000 },
-  { symbol: 'MKR', name: 'Maker', icon: 'Μ', supply: 900000 },
+  { symbol: 'SKY', name: 'Sky (ex-Maker)', icon: 'Μ', supply: 23460000000 },
   { symbol: 'SAND', name: 'The Sandbox', icon: '🏖', supply: 2400000000 },
   { symbol: 'MANA', name: 'Decentraland', icon: '🌐', supply: 1900000000 },
   { symbol: 'AXS', name: 'Axie Infinity', icon: '🎮', supply: 150000000 },
@@ -58,7 +62,7 @@ export const COINS: CoinMeta[] = [
   { symbol: 'CHZ', name: 'Chiliz', icon: '🌶', supply: 9000000000 },
   { symbol: 'XLM', name: 'Stellar', icon: '✷', supply: 30000000000 },
   { symbol: 'XTZ', name: 'Tezos', icon: 'ꜩ', supply: 1000000000 },
-  { symbol: 'EOS', name: 'EOS', icon: 'Ɛ', supply: 1500000000 },
+  { symbol: 'ETC', name: 'Ethereum Classic', icon: '⟠', supply: 150000000 },
   { symbol: 'CRV', name: 'Curve DAO', icon: '⟿', supply: 1300000000 },
   { symbol: 'LDO', name: 'Lido DAO', icon: '🧊', supply: 900000000 },
   { symbol: 'GALA', name: 'Gala', icon: '🎲', supply: 38000000000 },

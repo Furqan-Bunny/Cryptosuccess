@@ -7,6 +7,7 @@
 // is only a last-resort fallback.
 
 import axios from 'axios';
+import { freshTickerPrice } from '@/lib/ticker-freshness';
 
 const SPOT_HOSTS = ['https://data-api.binance.vision', 'https://api.binance.com'];
 const FUTURES_HOST = 'https://fapi.binance.com';
@@ -30,8 +31,10 @@ async function spotGet(path: string, params?: Record<string, string | number>) {
 
 /**
  * Batch-fetch current spot prices for a set of app symbols.
- * Returns a map of app symbol -> price (USD). Symbols not on Binance are
- * skipped silently.
+ * Returns a map of app symbol -> price (USD). Symbols not on Binance, and pairs
+ * whose price is frozen (trading halted, see freshTickerPrice), are left out, so
+ * callers treat them as "no price" — nothing is filled, recorded or scored on a
+ * stale number.
  */
 export async function fetchSpotPrices(symbols: string[]): Promise<Record<string, number>> {
   const unique = Array.from(new Set(symbols.map(s => s.toUpperCase())));
@@ -42,23 +45,25 @@ export async function fetchSpotPrices(symbols: string[]): Promise<Record<string,
   const pairs = Array.from(pairToSymbol.keys());
 
   const result: Record<string, number> = {};
+  const take = (row: { symbol?: string; lastPrice?: unknown; closeTime?: unknown } | null | undefined) => {
+    const appSymbol = row?.symbol ? pairToSymbol.get(row.symbol) : undefined;
+    const price = freshTickerPrice(row);
+    if (appSymbol && price != null) result[appSymbol] = price;
+  };
 
+  // The 24h ticker (unlike /ticker/price) carries closeTime, which is how a
+  // halted pair's frozen price is told apart from a live one.
   try {
-    const resp = await spotGet('/api/v3/ticker/price', { symbols: JSON.stringify(pairs) });
-    const rows: Array<{ symbol: string; price: string }> = resp.data;
-    for (const row of rows) {
-      const appSymbol = pairToSymbol.get(row.symbol);
-      if (appSymbol) result[appSymbol] = parseFloat(row.price);
-    }
+    const resp = await spotGet('/api/v3/ticker/24hr', { symbols: JSON.stringify(pairs) });
+    for (const row of resp.data as any[]) take(row);
     return result;
   } catch {
     // Fallback: fetch individually, skipping any that fail (e.g. delisted pair).
     await Promise.all(
       pairs.map(async pair => {
         try {
-          const resp = await spotGet('/api/v3/ticker/price', { symbol: pair });
-          const appSymbol = pairToSymbol.get(pair);
-          if (appSymbol) result[appSymbol] = parseFloat(resp.data.price);
+          const resp = await spotGet('/api/v3/ticker/24hr', { symbol: pair });
+          take(resp.data);
         } catch {
           /* skip */
         }

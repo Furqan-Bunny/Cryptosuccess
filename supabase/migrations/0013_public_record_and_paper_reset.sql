@@ -50,6 +50,8 @@ grant execute on function public.track_record_summary() to service_role;
 -- paper account is put back to the starting 10,000 USD and every open stake /
 -- future is closed without payout — the same thing reset_paper_balance does for
 -- one user. This is paper money only; signals and the track record are untouched.
+-- Each affected user gets an in-app notification explaining the reset, and the
+-- futures history shows a voided position as "Voided (paper reset)".
 --
 -- Guarded by a marker row so re-running this file (or ALL_MIGRATIONS.sql) never
 -- wipes balances earned after the first run.
@@ -63,6 +65,26 @@ alter table public.data_fixes enable row level security;
 do $$
 begin
   if not exists (select 1 from public.data_fixes where name = '0013_paper_reset') then
+    -- Tell every affected user first (balance not already at the start value,
+    -- or an open stake / future that is about to be voided), so nobody finds a
+    -- changed balance or a voided position without an explanation. Inserted
+    -- directly (not via profiles.notifications): this is an account notice, not
+    -- a marketing or signal message.
+    insert into public.notifications (user_id, type, title, message, read, data)
+    select affected.user_id, 'system', 'Paper account reset',
+           'We reset all paper balances to $10,000 and closed open simulated stakes and futures '
+           || 'without payout after a data-integrity fix. Real money and your signal track record '
+           || 'are not affected.',
+           false, jsonb_build_object('reason', '0013_paper_reset')
+    from (
+      select user_id from public.paper_accounts where balance_usd <> 10000
+      union
+      select user_id from public.staking_positions where active
+      union
+      select user_id from public.futures_positions where status = 'open'
+    ) affected
+    where exists (select 1 from auth.users u where u.id = affected.user_id);
+
     update public.staking_positions
       set active = false, closed_at = now()
       where active;

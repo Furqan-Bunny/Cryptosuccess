@@ -133,7 +133,7 @@ export function createTelegramStore(db: SupabaseClient): BotStore {
           .select('id')
           .single();
         if (error) throw error;
-        return { recorded: true, id: data.id as string, price };
+        return { recorded: true, id: data.id as string, price, action: rec.action };
       } catch (e) {
         console.warn('recording telegram signal failed (reply still sent):', e);
         return { recorded: false, reason: 'error' };

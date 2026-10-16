@@ -226,16 +226,25 @@ async function handleSignal(msg: IncomingMessage, arg: string, deps: BotDeps, se
 
   const recorded = await store.recordSignal(msg.chatId, symbol, result.analysis);
 
-  return send(formatSignal({
+  const guardrailHits: string[] = [];
+  const text = formatSignal({
     symbol,
     analysis: result.analysis,
     price: recorded.recorded ? recorded.price : result.price,
     verifyUrl: `${deps.baseUrl}/verify`,
     remaining: gate.remaining,
     recordedSignalId: recorded.recorded ? recorded.id : null,
+    recordedAction: recorded.recorded ? recorded.action : null,
     notRecordedReason: recorded.recorded ? null : recorded.reason,
     riskLevel: prefs.riskLevel,
-  }));
+    onBannedPhrase: fields => { guardrailHits.push(...fields); },
+  });
+  // The read went out with the offending text removed; report it so prompt
+  // drift is noticed.
+  if (guardrailHits.length) {
+    await reportFailure(deps, 'bot.guardrail', new Error(`banned phrase removed from ${symbol} read: ${guardrailHits.join(', ')}`));
+  }
+  return send(text);
 }
 
 /** Refund a consumed credit; true only when the store confirms a credit was returned. */
@@ -276,7 +285,9 @@ async function handleAlerts(msg: IncomingMessage, arg: string, store: BotStore, 
   const parsed = parseToggleArg(arg);
   if (!parsed.ok) {
     const prefs = await store.getPrefs(msg.chatId);
-    return send(alertsUsageMessage(prefs.alertsEnabled));
+    // ON but no longer Pro: the push job skips this chat, so say it is paused.
+    const paused = prefs.alertsEnabled && !(await store.getAccountStatus(msg.chatId)).pro;
+    return send(alertsUsageMessage(prefs.alertsEnabled, paused));
   }
   if (!parsed.value) {
     await store.savePrefs(msg.chatId, { alertsEnabled: false });
