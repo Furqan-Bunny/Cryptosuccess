@@ -25,7 +25,7 @@ Open `.env.local` and fill in at least the core values. Every variable is descri
 | Anything at all | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_APP_URL` |
 | Server routes, quotas, crons | `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET` |
 | AI analyst and the bot | `ANTHROPIC_API_KEY` |
-| Card payments | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_STRIPE_PRO_PRICE_ID` |
+| Card payments | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_MONTHLY_PRICE_ID`, `STRIPE_PRO_YEARLY_PRICE_ID` (server-only; `NEXT_PUBLIC_STRIPE_PRO_PRICE_ID` is a legacy fallback for monthly only) |
 | Crypto payments | `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`, `NOWPAYMENTS_API_URL` |
 | Telegram bot | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` |
 | On-chain anchoring | `ANCHOR_*` (server) and `NEXT_PUBLIC_ANCHOR_*` (browser verifier) |
@@ -73,8 +73,11 @@ the Free plan (5 signals per UTC day).
 
 ### Stripe (test mode)
 
-1. Create a recurring Pro price in the Stripe dashboard and put its ID in
-   `NEXT_PUBLIC_STRIPE_PRO_PRICE_ID`.
+1. Create two recurring Pro prices in the Stripe dashboard, one monthly and one yearly, and
+   put their IDs in `STRIPE_PRO_MONTHLY_PRICE_ID` and `STRIPE_PRO_YEARLY_PRICE_ID`
+   (server-only). Without the yearly ID, yearly checkout is refused with "This plan is not
+   available right now". `NEXT_PUBLIC_STRIPE_PRO_PRICE_ID` is only a legacy fallback for
+   the monthly price.
 2. Forward webhooks locally with the Stripe CLI:
    `stripe listen --forward-to localhost:3000/api/stripe/webhook`, and copy the signing
    secret it prints into `STRIPE_WEBHOOK_SECRET`.

@@ -109,16 +109,20 @@ export async function POST(request: NextRequest) {
   if (insertErr || !row) {
     await reportError('signals.record.insert', insertErr ?? new Error('insert returned no row'), { route: ROUTE });
     // Give the credit back — the user got nothing for it. Pro (-1) never spent one.
+    // `refunded` is true only when the refund actually went through, so the UI
+    // never tells a user they got a credit back that they did not.
+    let refunded = false;
     if (remaining >= 0) {
       try {
         const { data: refund, error: refundErr } = await db.rpc('refund_signal', { p_uid: uid });
         if (refundErr) throw refundErr;
+        refunded = true;
         if (refund && Number.isFinite(Number(refund.remaining))) remaining = Number(refund.remaining);
       } catch (e) {
         await reportError('signals.record.refund', e, { route: ROUTE });
       }
     }
-    return NextResponse.json({ ok: false, reason: 'record_failed', remaining }, { status: 500 });
+    return NextResponse.json({ ok: false, reason: 'record_failed', remaining, refunded }, { status: 500 });
   }
 
   return NextResponse.json({

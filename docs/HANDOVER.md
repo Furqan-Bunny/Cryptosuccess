@@ -189,6 +189,22 @@ real processors listed). Backtest numbers quoted publicly come only from
   - Account deletion keeps scored signals (`user_id` set to NULL) so losing calls
     can't disappear and inclusion proofs keep working; anchored leaves can't be
     deleted. `/api/anchor/proof` refuses to build a proof from an incomplete day.
+- **Migration `0013`** (run it BEFORE deploying the matching code):
+  - `track_record_summary()` (service role) feeds the public, logged-out
+    `GET /api/track-record`, shown at the top of `/verify`: aggregate wins /
+    losses / win rate over anchored BUY/SELL signals plus the last 14 anchored
+    days. No signal ids or user ids are exposed.
+  - One-time paper reset (guarded by a `data_fixes` marker row, so re-running is
+    safe): all paper balances back to 10,000 and open stakes / futures closed,
+    because rows written before 0012 could be forged.
+- Analyst reads are built only from server-side market data; the web route no
+  longer forwards a client signal into the shared, cached take.
+- Stripe `customer.subscription.created/updated` re-reads the live subscription
+  instead of trusting the (possibly stale or retried) event payload.
+- Signal horizons are limited to 15m / 1h / 4h / 1d: every recorded call is
+  scored once at 24h, so month / year calls were removed rather than mis-scored.
+- Anchor build reads a day's leaves in pages and refuses to anchor when the
+  count does not match the finalized signals for that day.
 
 ### 3.9 Quality baseline (keep it green)
 `npm run type-check` clean · `npm test` green (300+ tests) · `npm run build`

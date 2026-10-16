@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { getUidFromToken, createServiceClient } from '@/lib/supabase/server';
 import { reportError } from '@/lib/server/report-error';
+import { rateLimit } from '@/lib/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,11 +27,31 @@ export async function POST(request: NextRequest) {
   const uid = header?.startsWith('Bearer ') ? await getUidFromToken(header.slice(7)) : null;
   if (!uid) return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
 
+  // Per-user cap: every call writes a row, so unbounded minting would grow the
+  // table on a service-role write path.
+  const rl = await rateLimit('telegram-link', uid, 5, 60);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { ok: false, reason: 'rate_limited' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+    );
+  }
+
   const db = createServiceClient();
   const code = makeCode();
   const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
 
   try {
+    // One live code per account: a new code replaces any unused one, so the
+    // table holds at most one pending row per user (used rows are kept by the
+    // linking flow and pruned daily by /api/ops/prune).
+    const { error: delErr } = await db
+      .from('telegram_link_codes')
+      .delete()
+      .eq('user_id', uid)
+      .is('used_at', null);
+    if (delErr) throw delErr;
+
     const { error } = await db
       .from('telegram_link_codes')
       .insert({ code, user_id: uid, expires_at: expiresAt });

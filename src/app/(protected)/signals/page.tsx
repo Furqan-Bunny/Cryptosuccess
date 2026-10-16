@@ -15,7 +15,7 @@ import { buildSignalReport, SignalReportData, withRecordedLevels } from '@/servi
 import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
 import { signalHistoryService, SignalRecordError } from '@/services/signal-history.service';
 import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
-import { HORIZONS, DEFAULT_HORIZON, getHorizon } from '@/lib/horizons';
+import { HORIZONS, DEFAULT_HORIZON, getHorizon, RECORD_SCORING_NOTE } from '@/lib/horizons';
 import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar, FaClock } from 'react-icons/fa';
 
 import SignalReport from '@/components/signals/SignalReport';
@@ -126,7 +126,12 @@ export default function SignalsPage() {
         toast.error('Signals are temporarily unavailable. No credit was used — please try again shortly.');
         break;
       case 'record_failed':
-        toast.error('The signal could not be saved, so your credit was returned. Please try again.');
+        // Only mention the credit when it was actually returned; Pro never spent one.
+        toast.error(
+          e.refunded
+            ? 'The signal could not be saved, so your credit was returned. Please try again.'
+            : 'The signal could not be saved. Please try again.'
+        );
         break;
       case 'unauthorized':
         toast.error('Your session has expired. Please sign in again.');
@@ -304,6 +309,9 @@ export default function SignalsPage() {
                 {getHorizon(horizon).note && (
                   <p className="text-[11px] text-yellow-300/80 mt-2">{getHorizon(horizon).note}</p>
                 )}
+                <p className="text-[11px] text-text-secondary mt-2">
+                  {RECORD_SCORING_NOTE} For a longer view, read the analyst&apos;s long-term take (not recorded).
+                </p>
               </div>
 
               {watchlist.length === 0 ? (

@@ -5,27 +5,16 @@ import Link from 'next/link';
 import { signalHistoryService, StoredSignal } from '@/services/signal-history.service';
 import { marketService } from '@/services/market.service';
 import { FaHistory, FaChartLine, FaLink } from 'react-icons/fa';
+import { outcomeBadge, type OutcomeTone } from '@/lib/outcome-badge';
 
-function getOutcomeStyle(outcome?: string) {
-  switch (outcome) {
-    case 'hit_target': return 'text-green-400 bg-green-900/20';
-    case 'expired_profit': return 'text-green-300 bg-green-900/10';
-    case 'hit_stop': return 'text-red-400 bg-red-900/20';
-    case 'expired_loss': return 'text-red-300 bg-red-900/10';
-    default: return 'text-yellow-400 bg-yellow-900/20';
-  }
-}
-
-function getOutcomeLabel(outcome?: string) {
-  switch (outcome) {
-    // Scored on the single price 24h after the call, not the path in between.
-    case 'hit_target': return 'Past Target at 24h';
-    case 'expired_profit': return 'Profit at 24h';
-    case 'hit_stop': return 'Past Stop at 24h';
-    case 'expired_loss': return 'Loss at 24h';
-    default: return 'Pending';
-  }
-}
+const TONE_STYLE: Record<OutcomeTone, string> = {
+  win: 'text-green-400 bg-green-900/20',
+  small_win: 'text-green-300 bg-green-900/10',
+  loss: 'text-red-400 bg-red-900/20',
+  small_loss: 'text-red-300 bg-red-900/10',
+  neutral: 'text-gray-300 bg-gray-800',
+  pending: 'text-yellow-400 bg-yellow-900/20',
+};
 
 export default function SignalHistory({ userId }: { userId: string }) {
   const [signals, setSignals] = useState<StoredSignal[]>([]);
@@ -97,10 +86,14 @@ export default function SignalHistory({ userId }: { userId: string }) {
 
       {/* Signal List */}
       <div className="space-y-3">
-        {signals.map((signal) => (
+        {signals.map((signal) => {
+          const badge = outcomeBadge(signal.action, signal.outcome);
+          const isHold = signal.action === 'HOLD';
+          const move = signal.profitLossPercent;
+          return (
           <div key={signal.id} className="card p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-3">
                 <span className={`px-2 py-1 rounded text-sm font-medium ${
                   signal.action === 'BUY' ? 'text-green-400 bg-green-900/20' :
                   signal.action === 'SELL' ? 'text-red-400 bg-red-900/20' :
@@ -108,23 +101,27 @@ export default function SignalHistory({ userId }: { userId: string }) {
                 }`}>
                   {signal.action}
                 </span>
-                <div>
+                <div className="min-w-0">
                   <span className="text-white font-medium">{signal.symbol}</span>
                   <span className="text-text-secondary text-sm ml-2">
                     @ {marketService.formatPrice(signal.entryPrice)}
                   </span>
                 </div>
               </div>
-              <div className="flex items-center space-x-4">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-4">
                 <span className="text-text-secondary text-sm">
                   {signal.confidence.toFixed(0)}%
                 </span>
-                <span className={`px-2 py-1 rounded text-xs font-medium ${getOutcomeStyle(signal.outcome)}`}>
-                  {getOutcomeLabel(signal.outcome)}
+                <span className={`px-2 py-1 rounded text-xs font-medium ${TONE_STYLE[badge.tone]}`}>
+                  {badge.label}
                 </span>
-                {signal.profitLossPercent !== undefined && (
-                  <span className={`text-sm font-medium ${signal.profitLossPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {signal.profitLossPercent >= 0 ? '+' : ''}{signal.profitLossPercent.toFixed(2)}%
+                {move !== undefined && (
+                  <span
+                    title={badge.moveCaption === 'P/L' ? 'Profit / loss at the 24h check' : 'Price move at the 24h check (not scored)'}
+                    className={`text-sm font-medium ${isHold ? 'text-text-secondary' : move >= 0 ? 'text-green-400' : 'text-red-400'}`}
+                  >
+                    {isHold && <span className="text-xs font-normal mr-1">{badge.moveCaption}</span>}
+                    {move >= 0 ? '+' : ''}{move.toFixed(2)}%
                   </span>
                 )}
                 {signal.id && signal.outcome && signal.outcome !== 'pending' && (
@@ -139,7 +136,8 @@ export default function SignalHistory({ userId }: { userId: string }) {
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

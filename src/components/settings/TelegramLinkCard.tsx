@@ -27,6 +27,7 @@ export default function TelegramLinkCard() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
+      if (res.status === 429) throw new Error('Too many codes in a short time. Please wait a minute and try again.');
       if (!res.ok || !data.ok) throw new Error('Could not generate a code');
       setCode(data.code);
       setExpiresAt(new Date(data.expiresAt));

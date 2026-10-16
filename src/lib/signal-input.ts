@@ -111,40 +111,6 @@ export function validateSignalInput(body: unknown): SignalInputResult {
   };
 }
 
-export interface AnalystQuantSignal {
-  action: SignalAction;
-  confidence: number;
-  price: number;
-  target: number;
-  stop: number;
-  engine: 'ai' | 'technical';
-}
-
-/**
- * Reduce the client's optional quant signal for the analyst prompt to a strict,
- * numbers-only shape (or undefined). The analyst take is cached per coin and
- * served to EVERY user and the Telegram bot, so free-form client data must never
- * reach the prompt — it would let one user steer everyone's read.
- */
-export function sanitizeAnalystSignal(raw: unknown): AnalystQuantSignal | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const s = raw as Record<string, unknown>;
-  if (typeof s.action !== 'string' || !ACTIONS.has(s.action)) return undefined;
-  const { confidence, price, target, stop } = s;
-  if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
-    return undefined;
-  }
-  if (!isPositiveFinite(price) || !isPositiveFinite(target) || !isPositiveFinite(stop)) return undefined;
-  return {
-    action: s.action as SignalAction,
-    confidence,
-    price,
-    target,
-    stop,
-    engine: s.engine === 'ai' ? 'ai' : 'technical',
-  };
-}
-
 /** True when the client's entry is within MAX_ENTRY_DEVIATION of live spot. */
 export function isEntryNearSpot(clientEntry: number, spot: number): boolean {
   if (!isPositiveFinite(clientEntry) || !isPositiveFinite(spot)) return false;

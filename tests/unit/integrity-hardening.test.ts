@@ -69,21 +69,21 @@ describe('isCompleteLeafSet', () => {
 });
 
 describe('horizonLevels', () => {
-  const h = getHorizon('1y');
+  const h = getHorizon('1d');
 
-  it('keeps a high-ATR 1y BUY stop positive, so the record route accepts it', () => {
+  it('keeps a high-ATR BUY stop positive, so the record route accepts it', () => {
     const price = 1;
-    const atr = 0.4; // 40% weekly ATR: 4 x ATR would put the stop at -0.6
+    const atr = 0.5; // 50% daily ATR: 2.5 x ATR would put the stop at -0.25
     const { stopLoss, targetPrice } = horizonLevels('BUY', price, atr, h.atr);
     expect(stopLoss).toBeCloseTo(price * MIN_LEVEL_FRACTION);
     const parsed = validateSignalInput({
-      symbol: 'DOGE', action: 'BUY', confidence: 55, entryPrice: price, targetPrice, stopLoss, reasoning: 'x', horizon: '1y',
+      symbol: 'DOGE', action: 'BUY', confidence: 55, entryPrice: price, targetPrice, stopLoss, reasoning: 'x', horizon: '1d',
     });
     expect(parsed.ok).toBe(true);
   });
 
   it('floors a SELL target the same way', () => {
-    const { stopLoss, targetPrice } = horizonLevels('SELL', 1, 0.4, h.atr);
+    const { stopLoss, targetPrice } = horizonLevels('SELL', 1, 0.5, h.atr);
     expect(targetPrice).toBeCloseTo(MIN_LEVEL_FRACTION);
     expect(stopLoss).toBeGreaterThan(1);
   });

@@ -3,6 +3,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { runFollowUpJob } from '@/services/telegram/followup-job';
 import { runPushJob } from '@/services/telegram/push-job';
+import { chunk, IN_LIST_CHUNK } from '@/lib/chunk';
 
 type Row = Record<string, unknown>;
 
@@ -13,6 +14,8 @@ type Row = Record<string, unknown>;
  */
 function fakeDb(tables: Record<string, Row[]>) {
   const updates: Array<{ table: string; patch: Row; ids: unknown[] }> = [];
+  // Largest `in (...)` list any query sent (PostgREST puts it in the URL).
+  const inSizes: number[] = [];
 
   function builder(table: string) {
     let rows = () => tables[table] ?? [];
@@ -62,7 +65,7 @@ function fakeDb(tables: Record<string, Row[]>) {
       select: () => b,
       eq: (col: string, v: unknown) => { filters.push(r => r[col] === v); return b; },
       is: (col: string, v: unknown) => { filters.push(r => r[col] === v); return b; },
-      in: (col: string, vs: unknown[]) => { filters.push(r => vs.includes(r[col])); return b; },
+      in: (col: string, vs: unknown[]) => { inSizes.push(vs.length); filters.push(r => vs.includes(r[col])); return b; },
       like: (col: string, pattern: string) => {
         const prefix = pattern.replace(/%$/, '');
         filters.push(r => typeof r[col] === 'string' && (r[col] as string).startsWith(prefix));
@@ -88,7 +91,7 @@ function fakeDb(tables: Record<string, Row[]>) {
     return b;
   }
 
-  return { db: { from: (t: string) => builder(t) } as unknown as SupabaseClient, tables, updates };
+  return { db: { from: (t: string) => builder(t) } as unknown as SupabaseClient, tables, updates, inSizes };
 }
 
 const hex = (n: number) => n.toString(16).padStart(12, '0');
@@ -159,5 +162,53 @@ describe('runPushJob batch selection', () => {
       expect(row.alerts_enabled).toBe(true);
       expect(typeof row.last_push_at).toBe('string');
     }
+  });
+});
+
+describe('in-list chunking', () => {
+  it('splits into slices of at most the limit', () => {
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+    expect(chunk([], 2)).toEqual([]);
+    expect(chunk(Array.from({ length: 250 }, (_, i) => i)).map(c => c.length)).toEqual([100, 100, 50]);
+    expect(() => chunk([1], 0)).toThrow();
+  });
+
+  it('push job never sends more than IN_LIST_CHUNK ids in one query', async () => {
+    const prefs: Row[] = [];
+    const users: Row[] = [];
+    const profiles: Row[] = [];
+    for (let i = 0; i < 450; i++) {
+      prefs.push({ telegram_id: 10_000 + i, risk_level: 'medium', coins: ['BTC'], alerts_enabled: true, last_push_at: null });
+      users.push({ telegram_id: 10_000 + i, user_id: uuid(i) });
+      profiles.push({ id: uuid(i), subscription_status: 'free', plan_id: null, current_period_end: null });
+    }
+    const { db, inSizes, tables } = fakeDb({ telegram_prefs: prefs, telegram_users: users, profiles });
+    const res = await runPushJob({
+      db, send: jest.fn(),
+      analyst: jest.fn(),
+      spotPrices: jest.fn().mockResolvedValue({}),
+      verifyUrl: 'https://x/verify',
+      startDeadline: Date.now() + 60_000,
+      generateDeadline: Date.now() + 60_000,
+    });
+
+    expect(res.scanned).toBe(450);
+    expect(res.skipped.not_pro).toBe(450);
+    expect(inSizes.length).toBeGreaterThan(0);
+    expect(Math.max(...inSizes)).toBeLessThanOrEqual(IN_LIST_CHUNK);
+    // Every chat was still deferred across the chunked updates.
+    expect(tables.telegram_prefs.every(r => typeof r.last_push_at === 'string')).toBe(true);
+  });
+
+  it('follow-up job never sends more than IN_LIST_CHUNK ids in one query', async () => {
+    const now = Date.now();
+    const iso = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString();
+    const signals: Row[] = [];
+    for (let i = 0; i < 350; i++) signals.push(signalRow(i, uuid(5000 + i), iso(10 + i)));
+    const { db, inSizes } = fakeDb({ signals, telegram_followups: [], telegram_users: [] });
+    const res = await runFollowUpJob({ db, send: jest.fn(), verifyUrl: 'https://x/verify', deadline: now + 60_000 });
+
+    expect(res.candidates).toBe(350);
+    expect(Math.max(...inSizes)).toBeLessThanOrEqual(IN_LIST_CHUNK);
   });
 });

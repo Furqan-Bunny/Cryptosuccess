@@ -159,7 +159,7 @@ export function formatSignal(params: {
 
   // Provably-honest hook — only claim on-chain recording for calls we actually recorded.
   if (recordedSignalId) {
-    lines.push(`🔗 This call is recorded in our track record. After it's scored (24h) it is anchored on-chain, so we can't hide it if it loses → ${verifyUrl}?signalId=${recordedSignalId}`);
+    lines.push(`🔗 This call is recorded in our track record. It is scored once, on the price 24h after the call (not over the whole horizon above); after that it is anchored on-chain, so we can't hide it if it loses → ${verifyUrl}?signalId=${recordedSignalId}`);
   } else {
     lines.push(`ℹ️ ${notRecordedLine(notRecordedReason)} Our verified track record → ${verifyUrl}`);
   }

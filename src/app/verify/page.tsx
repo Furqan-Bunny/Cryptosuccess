@@ -13,6 +13,7 @@ import {
 } from 'viem';
 import { hashLeaf, verifyMerkleProof } from '@/lib/merkle';
 import { UUID_RE } from '@/lib/uuid';
+import PublicTrackRecord from '@/components/signals/PublicTrackRecord';
 
 // Public client-side config (safe to expose). When unset, on-chain verification
 // is skipped and only the off-chain proof (leaf → root) is checked.
@@ -160,7 +161,10 @@ function VerifyInner() {
 
   return (
     <div className="max-w-2xl mx-auto p-6">
-      <h1 className="text-2xl font-semibold text-white mb-2">Verify a signal on-chain</h1>
+      <h1 className="text-2xl font-semibold text-white mb-4">Our track record</h1>
+      <PublicTrackRecord />
+
+      <h2 className="text-xl font-semibold text-white mb-2">Verify a signal on-chain</h2>
       <p className="text-text-secondary mb-4">
         Once a signal is at least 24 hours old our server scores it against a single price check
         (moves before that check are not counted). Each day&apos;s scored

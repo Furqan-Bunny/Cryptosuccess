@@ -158,7 +158,13 @@ export async function POST(request: NextRequest) {
 
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
-        const subscription = event.data.object as Stripe.Subscription;
+        // Stripe does not guarantee delivery order, and a failed delivery is
+        // retried hours later, so the payload's status may be stale (an old
+        // "active" arriving after the subscription was deleted would re-grant
+        // Pro that nothing ever revokes). Act on the subscription's CURRENT
+        // state instead: re-read it from Stripe.
+        const eventSubscription = event.data.object as Stripe.Subscription;
+        const subscription = await stripe.subscriptions.retrieve(eventSubscription.id);
         const customerId = idOf(subscription.customer);
         const userId = await resolveUserId(db, subscription.metadata?.userId, customerId);
         if (!userId) break;

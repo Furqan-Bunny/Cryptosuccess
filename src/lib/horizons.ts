@@ -2,8 +2,18 @@
 // signal is computed), the higher CONFIRM timeframes used for multi-timeframe
 // confirmation, the engine to use (rule-based vs the AI model for a timeframe),
 // and ATR multiples for stop/target (wider for longer horizons).
+//
+// Every generated signal is RECORDED and scored once, on the spot price ~24h
+// after it was made (see /api/signals/evaluate). Multi-week / multi-month
+// horizons were removed: a 24h check would score a 1-month or 1-year call as
+// something it never claimed to be, in the public, anchored record. The
+// long-term view lives in the analyst's long-term read, which is not recorded.
 
-export type HorizonId = '15m' | '1h' | '4h' | '1d' | '1mo' | '1y';
+export type HorizonId = '15m' | '1h' | '4h' | '1d';
+
+/** How a recorded call is scored, shown under the horizon picker. */
+export const RECORD_SCORING_NOTE =
+  'Every signal you generate is recorded and scored once, on the price about 24h later, against its target and stop — whatever horizon you pick.';
 
 export interface Horizon {
   id: HorizonId;
@@ -15,7 +25,7 @@ export interface Horizon {
   modelTF?: string;       // which trained model to use (for engine: 'model')
   limit: number;          // candles to fetch on the entry TF
   atr: { stop: number; target: number };
-  biasTF?: string;        // the dominant higher TF for long horizons
+  biasTF?: string;        // optional dominant higher TF for the MTF confirmation
   note?: string;          // honesty / context note shown in the UI
 }
 
@@ -41,18 +51,6 @@ export const HORIZONS: Horizon[] = [
     entryTF: '1d', confirmTFs: ['1w', '1M'], engine: 'model', modelTF: '1d',
     limit: 320, atr: { stop: 2.5, target: 4 },
   },
-  {
-    id: '1mo', label: 'Position · ~1 month', short: '1mo',
-    entryTF: '1d', confirmTFs: ['1w', '1M'], engine: 'model', modelTF: '1d',
-    limit: 320, atr: { stop: 3, target: 6 }, biasTF: '1w',
-    note: 'Multi-week hold — the weekly trend drives the read; the daily model times entries.',
-  },
-  {
-    id: '1y', label: 'Long-term · ~1 year', short: '1y',
-    entryTF: '1w', confirmTFs: ['1M'], engine: 'model', modelTF: '1d',
-    limit: 250, atr: { stop: 4, target: 10 }, biasTF: '1M',
-    note: 'Position view — driven by the weekly/monthly trend, not a short-term forecast.',
-  },
 ];
 
 export const DEFAULT_HORIZON: HorizonId = '1h';
@@ -66,8 +64,8 @@ export function getHorizon(id: string): Horizon {
   return BY_ID[id] ?? BY_ID[DEFAULT_HORIZON];
 }
 
-// Floor for a level below the entry, as a fraction of the entry price. On long
-// horizons a volatile coin's ATR can be a large share of its price, so
+// Floor for a level below the entry, as a fraction of the entry price. On a
+// volatile coin the ATR can be a large share of its price, so
 // "price - k * ATR" can reach zero or below — an impossible level that the
 // record route rightly rejects. Capping the distance at 95% keeps every level a
 // real, positive price without changing the indicator maths.

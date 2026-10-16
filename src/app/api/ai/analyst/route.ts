@@ -5,7 +5,6 @@ import { rateLimit } from '@/lib/server/rate-limit';
 import { generateAnalystTake } from '@/services/analyst.service';
 import { isSupportedCoin } from '@/lib/coins';
 import { isEffectivePro } from '@/lib/subscription-rules';
-import { sanitizeAnalystSignal } from '@/lib/signal-input';
 import { reportError } from '@/lib/server/report-error';
 
 const ROUTE = '/api/ai/analyst';
@@ -43,7 +42,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { symbol, signal } = await request.json().catch(() => ({}));
+    const { symbol } = await request.json().catch(() => ({}));
     if (typeof symbol !== 'string' || !isSupportedCoin(symbol)) {
       return NextResponse.json({ available: false, reason: 'bad_request' }, { status: 400 });
     }
@@ -94,9 +93,10 @@ export async function POST(request: NextRequest) {
 
     // Shared brain: cache-first read + generate. See analyst.service.ts — the
     // same path the Telegram bot uses, so both surfaces reason identically.
-    // The take is cached per coin and shared by every user, so only a strict,
-    // numbers-only view of the client's signal may reach the prompt.
-    const result = await generateAnalystTake(sym, db, sanitizeAnalystSignal(signal));
+    // The take is cached per coin and shared by every user (and recorded by the
+    // bot), so nothing from the request body reaches the prompt: the read is
+    // built only from server-fetched market data and news.
+    const result = await generateAnalystTake(sym, db);
     if (!result) {
       return NextResponse.json({ available: false, reason: 'no_output' }, { status: 502 });
     }

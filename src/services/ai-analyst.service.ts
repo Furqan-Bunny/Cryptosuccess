@@ -26,7 +26,7 @@ export interface AnalystTake {
 /**
  * Ask the Claude analyst layer for a multi-timeframe, news-aware read with both
  * short-term and long-term verdicts. The route does the heavy lifting (fetching
- * multi-timeframe data + web research) server-side, so we send a slim payload.
+ * multi-timeframe data + web research) server-side, so we send only the coin.
  * Returns null when the layer is unavailable (no key / error) so the UI falls
  * back to the quantitative report alone.
  */
@@ -38,21 +38,12 @@ export async function getAnalystTake(report: SignalReportData): Promise<AnalystT
     const token = session?.access_token ?? null;
     if (!token) return null;
 
-    const { signal } = report;
+    // Only the coin is sent: the read is shared across users, so the server
+    // builds it from its own market data rather than from this client's signal.
     const res = await fetch('/api/ai/analyst', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        symbol: signal.symbol,
-        signal: {
-          action: signal.action,
-          confidence: signal.confidence,
-          price: signal.price,
-          target: signal.targetPrice,
-          stop: signal.stopLoss,
-          engine: signal.engine ?? 'technical',
-        },
-      }),
+      body: JSON.stringify({ symbol: report.signal.symbol }),
     });
     if (!res.ok) return null;
     const data = await res.json();

@@ -10,6 +10,7 @@ import { formatPushDigest, type PushItem } from '@/services/bot/format';
 import { prefsFromRow } from '@/services/bot/prefs';
 import { pushCoinsFor, pushCutoffIso, pushSkipReason, type PushSkipReason } from '@/services/bot/push';
 import { isEffectivePro } from '@/lib/subscription-rules';
+import { chunk } from '@/lib/chunk';
 
 const BATCH_LIMIT = 500;
 
@@ -57,19 +58,22 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
   if (!prefRows?.length) return result;
   result.scanned = prefRows.length;
 
-  // Link + plan state for those chats (two flat queries; no cross-table joins).
-  const ids = prefRows.map(r => r.telegram_id);
-  const { data: users, error: uErr } = await db.from('telegram_users').select('telegram_id, user_id').in('telegram_id', ids);
-  if (uErr) throw new Error(uErr.message);
-  const userByChat = new Map<string, string | null>((users ?? []).map(u => [String(u.telegram_id), (u.user_id as string | null) ?? null]));
+  // Link + plan state for those chats (flat queries; no cross-table joins),
+  // looked up in chunks so the `in (...)` lists stay well inside URL limits.
+  const userByChat = new Map<string, string | null>();
+  for (const ids of chunk(prefRows.map(r => r.telegram_id))) {
+    const { data: users, error: uErr } = await db.from('telegram_users').select('telegram_id, user_id').in('telegram_id', ids);
+    if (uErr) throw new Error(uErr.message);
+    for (const u of users ?? []) userByChat.set(String(u.telegram_id), (u.user_id as string | null) ?? null);
+  }
 
   const userIds = Array.from(new Set(Array.from(userByChat.values()).filter((v): v is string => !!v)));
   const statusByUser = new Map<string, string>();
-  if (userIds.length) {
+  for (const ids of chunk(userIds)) {
     const { data: profiles, error: pErr } = await db
       .from('profiles')
       .select('id, subscription_status, plan_id, current_period_end')
-      .in('id', userIds);
+      .in('id', ids);
     if (pErr) throw new Error(pErr.message);
     // A lapsed one-off crypto Pro is treated as free even before the expiry cron runs.
     for (const p of profiles ?? []) {
@@ -104,11 +108,11 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
   // group chat) would otherwise stay at the front of every batch, and enough of
   // them would crowd out eligible Pro chats for good. Move them to the back of
   // the queue (their setting is kept, so alerts resume if they link / renew).
-  if (ineligible.length) {
+  for (const ids of chunk(ineligible)) {
     const { error: dErr } = await db
       .from('telegram_prefs')
       .update({ last_push_at: new Date(now).toISOString() })
-      .in('telegram_id', ineligible);
+      .in('telegram_id', ids);
     if (dErr) console.warn('push: could not defer ineligible chats:', dErr.message);
   }
   if (!eligible.length) return result;

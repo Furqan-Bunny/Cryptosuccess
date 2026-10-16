@@ -250,7 +250,8 @@ export default function HomePage() {
                 <li className="flex items-start gap-3">
                   <FaFingerprint className="text-primary mt-1 flex-shrink-0" aria-hidden="true" />
                   <span>
-                    Bot calls with usable levels go into the same scored, anchored track record
+                    Calls from a linked account (with usable levels) go into the same scored,
+                    anchored track record; reads in unlinked chats are not recorded
                   </span>
                 </li>
               </ul>

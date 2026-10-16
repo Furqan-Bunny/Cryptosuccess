@@ -61,13 +61,15 @@ export interface RecordSignalResult {
 /**
  * A failed POST /api/signals/record. `reason` is the server's machine code
  * (limit_reached, stale_price, price_unavailable, quota_unavailable, …);
- * `remaining` is set when the server reported the allowance.
+ * `remaining` is set when the server reported the allowance; `refunded` is true
+ * only when a failed save actually gave the credit back.
  */
 export class SignalRecordError extends Error {
   constructor(
     public readonly reason: string,
     public readonly status: number,
-    public readonly remaining?: number
+    public readonly remaining?: number,
+    public readonly refunded: boolean = false
   ) {
     super(reason);
     this.name = 'SignalRecordError';
@@ -109,7 +111,7 @@ class SignalHistoryService {
     const data = await res.json().catch(() => null);
     const remaining = typeof data?.remaining === 'number' ? data.remaining : undefined;
     if (!res.ok || !data?.ok || typeof data.id !== 'string') {
-      throw new SignalRecordError(String(data?.reason ?? 'error'), res.status, remaining);
+      throw new SignalRecordError(String(data?.reason ?? 'error'), res.status, remaining, data?.refunded === true);
     }
     const levels = { entryPrice: data.entryPrice, targetPrice: data.targetPrice, stopLoss: data.stopLoss };
     return { id: data.id, remaining: remaining ?? -1, levels: isValidLevels(levels) ? levels : null };

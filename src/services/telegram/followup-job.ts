@@ -11,10 +11,13 @@ import {
   pickFollowUpChat, toFollowUpSignal,
 } from '@/services/bot/followups';
 import { TELEGRAM_READ_PREFIX } from '@/services/bot/record';
+import { chunk } from '@/lib/chunk';
 
-const BATCH_LIMIT = 200;
+// One page of signals per query; also the size of the `in (...)` id lists
+// built from a page, so it stays at IN_LIST_CHUNK to keep URLs short.
+const BATCH_LIMIT = 100;
 // Upper bound on rows scanned per run (pages of BATCH_LIMIT).
-const MAX_SCAN_PAGES = 10;
+const MAX_SCAN_PAGES = 20;
 
 export interface FollowUpJobDeps {
   db: SupabaseClient;
@@ -82,11 +85,11 @@ export async function runFollowUpJob(deps: FollowUpJobDeps): Promise<FollowUpJob
   // Looked up in chunks so the id list stays well inside URL limits.
   const userIds = Array.from(new Set(pending.map(p => p.userId)));
   const chats: Array<{ telegram_id: unknown; user_id: unknown; updated_at: unknown }> = [];
-  for (let i = 0; i < userIds.length; i += BATCH_LIMIT) {
+  for (const ids of chunk(userIds)) {
     const { data, error: cErr } = await db
       .from('telegram_users')
       .select('telegram_id, user_id, updated_at')
-      .in('user_id', userIds.slice(i, i + BATCH_LIMIT));
+      .in('user_id', ids);
     if (cErr) throw new Error(cErr.message);
     chats.push(...(data ?? []));
   }

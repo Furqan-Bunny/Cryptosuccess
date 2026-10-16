@@ -5,6 +5,8 @@ import { withCronMonitoring } from '@/lib/server/cron-monitor';
 import { reportError } from '@/lib/server/report-error';
 import { hashLeaf, computeMerkleRoot } from '@/lib/merkle';
 import { canonicalizeLeaf, LeafFields } from '@/lib/track-record-leaf';
+import { readAllPages } from '@/lib/paging';
+import { chunk } from '@/lib/chunk';
 import {
   isAnchoringEnabled,
   sendAnchor,
@@ -17,6 +19,10 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const MAX_DAYS_PER_RUN = 5; // bound work; backfill catches up over subsequent runs
+// signal_leaves rows per insert request (each carries a canonical string), so a
+// busy day never exceeds the request body limit.
+const LEAF_INSERT_CHUNK = 500;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Signals outlive account deletion with user_id set to NULL (migration 0012).
 // The leaf format is frozen with a string userId, so a signal whose account was
@@ -74,10 +80,34 @@ async function handler(request: NextRequest) {
 
     let built = 0;
     for (const day of days) {
-      const { data: rows, error: leavesErr } = await db.rpc('finalized_signal_leaves', { p_day: day });
-      if (leavesErr) throw new Error(leavesErr.message);
-      const leaves = (rows ?? []) as LeafRow[];
+      // The RPC is capped at 1000 rows per response like any PostgREST read, so
+      // it is read in pages (the function orders by id, so pages are stable). A
+      // day anchored from a truncated set would never be revisited.
+      const leaves = await readAllPages<LeafRow>((from, to) =>
+        db.rpc('finalized_signal_leaves', { p_day: day }).range(from, to)
+      );
       if (leaves.length === 0) continue;
+
+      // Guard: the tree must cover EVERY finalized signal of that day. Refuse to
+      // write an anchor row from a short read; the day is retried next run.
+      const dayStart = new Date(`${day}T00:00:00.000Z`);
+      const { count, error: countErr } = await db
+        .from('signals')
+        .select('id', { count: 'exact', head: true })
+        .not('outcome', 'is', null)
+        .neq('outcome', 'pending')
+        .gte('evaluated_at', dayStart.toISOString())
+        .lt('evaluated_at', new Date(dayStart.getTime() + DAY_MS).toISOString());
+      if (countErr) throw new Error(countErr.message);
+      if (count !== leaves.length) {
+        await reportError('cron.anchor-run.leaf-count', new Error('leaf read does not match finalized signal count; day not anchored'), {
+          route: '/api/anchor/run',
+          day,
+          leaves: leaves.length,
+          finalized: count,
+        });
+        continue;
+      }
 
       const canon = leaves.map(r => canonicalizeLeaf(toLeafFields(r)));
       const leafHashes = canon.map(hashLeaf);
@@ -104,7 +134,11 @@ async function handler(request: NextRequest) {
         leaf_hash: leafHashes[i],
         canonical: canon[i],
       }));
-      const { error: lErr } = await db.from('signal_leaves').insert(leafInserts);
+      let lErr: { message: string } | null = null;
+      for (const part of chunk(leafInserts, LEAF_INSERT_CHUNK)) {
+        ({ error: lErr } = await db.from('signal_leaves').insert(part));
+        if (lErr) break;
+      }
       if (lErr) {
         // Roll back the anchor row (FK cascade removes any partial leaves) so the
         // day has no anchor marker and is retried cleanly next run — never a

@@ -21,8 +21,9 @@ nothing stops the record being rewritten later. This is built the other way roun
   results are anchored on-chain daily, so anyone can check that a result has not been
   changed since. Details below.
 - **A Telegram coach** (`/signal`, `/verify`, `/link`, `/risk`, `/coins`, `/alerts`,
-  `/settings`, `/subscribe`, `/help`) that uses the same analyst server-side. Bot calls with
-  usable levels enter the same track record, and users are told how each call turned out.
+  `/settings`, `/subscribe`, `/help`) that uses the same analyst server-side. Calls from a
+  linked account (with usable levels) enter the same track record, and users are told how each
+  call turned out. Reads in unlinked chats are not recorded.
 - **Paper trading** (spot, futures, staking, DCA) with simulated funds only.
 - **Subscriptions** through Stripe (monthly or yearly, renewing) and one-time crypto
   payments through NOWPayments (a fixed month or year, not renewing).
