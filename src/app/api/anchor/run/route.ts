@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
 import { createServiceClient } from '@/lib/supabase/server';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
+import { reportError } from '@/lib/server/report-error';
 import { hashLeaf, computeMerkleRoot } from '@/lib/merkle';
 import { canonicalizeLeaf, LeafFields } from '@/lib/track-record-leaf';
 import {
@@ -55,7 +57,7 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  return withCronMonitoring('anchor-run', async () => {
     const db = createServiceClient();
 
     // 1) Compute + store roots for past days that have finalized signals and no
@@ -110,31 +112,53 @@ async function handler(request: NextRequest) {
 
     // 2) Submit pending days on-chain (if configured). Off-chain-only otherwise.
     let anchored = 0;
+    let sendFailures = 0;
     if (isAnchoringEnabled()) {
-      const { data: pending } = await db
+      const { data: pending, error: pendingErr } = await db
         .from('signal_anchors')
         .select('day, merkle_root')
         .eq('status', 'pending')
         .is('tx_hash', null)
         .order('day', { ascending: true })
         .limit(MAX_DAYS_PER_RUN);
+      if (pendingErr) throw new Error(pendingErr.message);
 
       for (const a of pending ?? []) {
         const res = await sendAnchor(anchorDayKey(a.day), a.merkle_root as `0x${string}`);
-        if (!res) continue; // send failed → stays pending, retried next run
-        await db
+        if (!res) {
+          // Send failed → stays pending, retried next run. Recorded (no alert per
+          // day) so a chain/RPC outage is visible in error_events.
+          sendFailures += 1;
+          continue;
+        }
+        const { error: confirmErr } = await db
           .from('signal_anchors')
           .update({ tx_hash: res.txHash, block_number: Number(res.blockNumber), status: 'confirmed' })
           .eq('day', a.day);
+        if (confirmErr) {
+          // The root IS on-chain but the row still says pending — the next run
+          // would re-send it. Alert so the row can be reconciled by hand.
+          await reportError('cron.anchor-run.confirm', confirmErr, {
+            route: '/api/anchor/run',
+            day: a.day,
+            blockNumber: res.blockNumber,
+          });
+          continue;
+        }
         anchored += 1;
+      }
+      if (sendFailures > 0) {
+        await reportError('cron.anchor-run.send', new Error(`${sendFailures} anchor transaction(s) failed; days stay pending`), {
+          route: '/api/anchor/run',
+          level: 'warn',
+          alert: false,
+          sendFailures,
+        });
       }
     }
 
-    return NextResponse.json({ ok: true, built, anchored, chain: isAnchoringEnabled() });
-  } catch (error) {
-    console.error('Anchor run error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+    return NextResponse.json({ ok: true, built, anchored, sendFailures, chain: isAnchoringEnabled() });
+  });
 }
 
 export async function GET(request: NextRequest) {
