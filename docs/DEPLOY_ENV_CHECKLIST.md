@@ -21,7 +21,7 @@ Two independent problems, both now understood:
      `Error: Invalid supabaseUrl: Must be a valid HTTP or HTTPS URL.`
    - Even if an old build stays live, the bot code sees no reachable DB/AI and
      falls back to the "still being set up" message
-     (`src/app/api/telegram/webhook/route.ts` → `NOT_CONFIGURED`).
+     (`notConfiguredMessage()` in `src/services/bot/format.ts`).
 
    **Lesson:** the app cannot build or run without valid Supabase env values.
    Set them correctly *before* deploying.
@@ -51,10 +51,11 @@ The real values are the boss-provided keys already in the local `.env.local`
 ## Deploy steps (owner's Vercel, from GitHub)
 
 1. Set all six env vars above for **Production** (correct values, no placeholders).
-2. Deploy the `supabase-migration` branch (Git integration, or `vercel deploy --prod`).
+2. Deploy the `main` branch (Git integration, or `vercel deploy --prod`).
 3. Wait for the build to reach **Ready**.
 4. Register the Telegram webhook once:
-   `GET https://<your-app>/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>`
+   `curl -X POST https://<your-app>/api/telegram/setup -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>"`
+   (`NEXT_PUBLIC_APP_URL` must be the public https URL in production).
 5. Test in Telegram: `/start`, then `/signal BTC`. A coached signal (not the
    "still being set up" message) means everything is wired correctly.
 

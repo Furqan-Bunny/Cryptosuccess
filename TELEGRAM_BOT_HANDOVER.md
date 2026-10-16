@@ -28,18 +28,19 @@ coach." Built on top of the existing signal engine (§3), nothing in §3 was rew
 | `.github/workflows/scheduler.yml` | Hourly engine tick + signal evaluation (Hobby crons are daily-only) |
 | `scripts/set-telegram-webhook.ts` | Alternative CLI webhook registration |
 | `tests/unit/telegram-format.test.ts` | Tests locking the honest-coach guardrails |
-| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0008 combined for one paste (generated) |
+| `supabase/ALL_MIGRATIONS.sql` | Convenience: migrations 0001→0011 combined for one paste (generated) |
 
 ## To make `/signal` work (for the reviewer deploying to the real project)
 1. **Supabase** — create a project; in the SQL Editor run `supabase/ALL_MIGRATIONS.sql`
-   (migrations 0001→0008). If 0001→0007 are already applied, run only `0008_telegram_shared_quota.sql`. Copy the Project URL, `anon` key, and `service_role` key.
+   (migrations 0001→0011). If some are already applied, run only the missing files from `supabase/migrations/` in numeric order. Copy the Project URL, `anon` key, and `service_role` key.
 2. **Anthropic** — create an API key (`sk-ant-…`) with a little billing credit.
 3. **Set env vars** (Vercel → Project → Settings → Environment Variables), then redeploy:
    - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (already set on the demo deploy)
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
    - `ANTHROPIC_API_KEY`
-4. **Register the webhook** on the final domain — open once in a browser:
-   `https://<your-domain>/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>`
+4. **Register the webhook** on the final domain — run once (the secret goes in a header, never the URL;
+   `NEXT_PUBLIC_APP_URL` must be the public https URL in production):
+   `curl -X POST https://<your-domain>/api/telegram/setup -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>"`
 5. Test in Telegram: `/start`, then `/signal BTC`.
 
 > Note: `vercel.json` crons are set to **daily** for Hobby. `.github/workflows/scheduler.yml`
@@ -113,7 +114,7 @@ finite numbers) before any field is echoed, since clients can insert their own s
 2. Schedule `GET /api/telegram/push` daily and `GET /api/telegram/followups` hourly with
    `Authorization: Bearer <CRON_SECRET>` (Vercel Hobby crons are daily-only → use the GitHub
    scheduler or cron-job.org for the hourly one).
-3. Re-open `/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once so the command menu shows
+3. Re-run `POST /api/telegram/setup` (with `Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>`) once so the command menu shows
    the new commands. Optional but recommended: `UPSTASH_REDIS_REST_URL` / `_TOKEN` for
    cross-instance rate limits.
 

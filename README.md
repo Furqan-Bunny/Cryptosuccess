@@ -20,8 +20,9 @@ nothing stops the record being rewritten later. This is built the other way roun
 - **A scored, anchored track record.** Signals are scored by the server and the finalized
   results are anchored on-chain daily, so anyone can check that a result has not been
   changed since. Details below.
-- **A Telegram coach** (`/signal`, `/verify`, `/link`, `/subscribe`, `/help`) that uses the
-  same analyst server-side. Bot calls with usable levels enter the same track record.
+- **A Telegram coach** (`/signal`, `/verify`, `/link`, `/risk`, `/coins`, `/alerts`,
+  `/settings`, `/subscribe`, `/help`) that uses the same analyst server-side. Bot calls with
+  usable levels enter the same track record, and users are told how each call turned out.
 - **Paper trading** (spot, futures, staking, DCA) with simulated funds only.
 - **Subscriptions** through Stripe (monthly or yearly, renewing) and one-time crypto
   payments through NOWPayments (a fixed month or year, not renewing).
@@ -30,9 +31,10 @@ nothing stops the record being rewritten later. This is built the other way roun
 
 This is the pipeline as it is implemented, not as an aspiration:
 
-1. **A signal is saved** to the `signals` table with its entry, target and stop. After
-   migration `0004` the table is insert-only for clients: there is no client UPDATE policy,
-   and a trigger blocks edits to evaluated rows.
+1. **A signal is saved** to the `signals` table with its entry, target and stop. Only the
+   server writes it (migration `0009`): `POST /api/signals/record` checks the levels,
+   re-prices the entry against live spot and uses the server's clock, and nobody can
+   update a row (migration `0004`).
 2. **The server scores it after 24 hours.** The `/api/signals/evaluate` cron picks up
    pending signals that are at least 24 hours old, prices them with the current Binance spot
    price and records the outcome with the shared deterministic scorer
@@ -147,7 +149,10 @@ daily. The anchor makes later edits detectable by anyone, without trusting us.
 ## Status
 
 - Web app, Supabase backend and Stripe subscriptions: built.
-- Telegram bot MVP: built (on-demand `/signal`, account linking, shared daily quota).
+- Telegram bot: built (on-demand `/signal`, account linking, shared daily quota, rate
+  limits, risk and coin preferences, daily alerts for Pro, outcome follow-ups).
+- Monitoring: scrubbed error log, recorded cron runs, `/api/ops/status` and optional
+  Telegram admin alerts.
 - On-chain anchoring: built and running on Base Sepolia testnet; mainnet not yet.
 - Prediction models run in the browser; the bot and the analyst run server-side.
 - Crypto payments through NOWPayments: built, activated per deployment once keys are set.

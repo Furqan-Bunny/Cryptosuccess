@@ -126,21 +126,29 @@ This is our trust backbone. **Fully working and verified end-to-end.**
 - **HARD GATE:** real trade execution can require licensing/KYC/geo limits — needs
   a **legal review** before any mainnet enablement. Treat as a distant future item.
 
-### 3.6 Telegram bot MVP — DONE
+### 3.6 Telegram bot — MVP + phase 2 DONE
 - Webhook `src/app/api/telegram/webhook/route.ts` verifies
-  `X-Telegram-Bot-Api-Secret-Token` (constant-time) and handles `/start`, `/help`,
-  `/signal <COIN>`, `/verify`, `/subscribe`, `/link <code>`.
+  `X-Telegram-Bot-Api-Secret-Token` (constant-time), caps the body size and hands
+  the message to the channel-agnostic core `src/services/bot/core.ts`
+  (`handleIncoming`). A future WhatsApp adapter only supplies a sender + store.
+- Commands: `/start`, `/help`, `/signal <COIN>`, `/verify`, `/subscribe`,
+  `/link <code>`, `/risk`, `/coins`, `/alerts`, `/settings`. In group chats only
+  `/start`, `/help`, `/verify` and `/subscribe` answer.
 - `/signal` uses the shared server-side analyst and formats an honest-coach reply
-  (`src/services/telegram/format.ts`: stop-loss, max loss / sizing, conviction,
-  explicit "stay out" on HOLD or low conviction; banned hype phrases are locked by
-  tests).
+  (`src/services/bot/format.ts`: stop-loss, max loss / sizing by risk level,
+  conviction, explicit "stay out" on HOLD or low conviction; banned hype phrases
+  are locked by tests). A failed read refunds the credit (`refund_telegram_signal`).
 - Bot calls with parseable, direction-consistent levels are written to `signals`
-  (`src/services/telegram/record.ts`) so they enter the same scored, anchored record.
+  (`src/services/bot/record.ts`) so they enter the same scored, anchored record.
+- Per-chat rate limits (20 msgs/min, 6 `/signal` per 10 min, 5 `/link` per 15 min).
+- Daily alerts for linked Pro chats (`/api/telegram/push`) and outcome follow-ups
+  for scored calls (`/api/telegram/followups`).
 - Account linking via one-time codes from Settings (`/api/telegram/link`,
-  `TelegramLinkCard`). Migrations `0007` (users, link codes, metering) and `0008`
-  (linked chats share the web account's 5/day quota; unlinked chats get their own).
-- Webhook registration: `scripts/set-telegram-webhook.ts` or the guarded
-  `/api/telegram/setup` route. Production checklist: `docs/DEPLOY_ENV_CHECKLIST.md`.
+  `TelegramLinkCard`). Migrations `0007`, `0008` (linked chats share the web
+  account's 5/day quota) and `0010` (prefs, follow-up ledger, refunds).
+- Webhook registration: `scripts/set-telegram-webhook.ts` or
+  `POST /api/telegram/setup` with `Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>`.
+  Production checklist: `docs/DEPLOY_ENV_CHECKLIST.md`.
 
 ### 3.7 Public pages and positioning — DONE
 Landing page leads with the honest-coach story and a "Verify our track record" CTA;
@@ -149,17 +157,35 @@ Landing page leads with the honest-coach story and a "Verify our track record" C
 real processors listed). Backtest numbers quoted publicly come only from
 `public/backtest-results.json`, with caveats.
 
-### 3.8 Quality baseline (keep it green)
-`npm run type-check` clean · `npm test` green (116 tests at the time of writing) ·
-`npm run build` green · `npm run lint` clean. **Do not regress these.**
+### 3.8 Security and integrity hardening (sprint 2026-10) — DONE
+- **Migration `0009`**: signals are inserted by the server only
+  (`POST /api/signals/record` re-prices the entry against live spot, uses server
+  timestamps and refunds the credit if the save fails); lapsed one-off crypto Pro
+  is metered as free (`consume_signal`) and downgraded by
+  `/api/subscriptions/expire`; paper cash changes only through
+  `adjust_paper_balance` / `reset_paper_balance`.
+- Stripe: price chosen on the server from plan + interval
+  (`STRIPE_PRO_MONTHLY_PRICE_ID` / `STRIPE_PRO_YEARLY_PRICE_ID`), same-origin return
+  URLs, period end read from subscription items, `past_due` keeps Pro during
+  retries. NOWPayments: invoiced amount must match, repeat payments extend the
+  current period. Open redirects in login / auth callback closed.
+- **Migration `0011`** + `src/lib/server/report-error.ts` /
+  `src/lib/server/cron-monitor.ts`: scrubbed error log (`error_events`), every cron
+  run recorded (`cron_runs`), optional Telegram admin alerts, `GET /api/health`
+  and `GET /api/ops/status` (see §4.4).
+
+### 3.9 Quality baseline (keep it green)
+`npm run type-check` clean · `npm test` green (300+ tests) · `npm run build`
+green · `npm run lint` clean with zero warnings (`react/no-unescaped-entities`
+is an error). **Do not regress these.**
 
 ---
 
 ## 4. 🔨 What REMAINS (in priority order)
 
-### 4.1 Telegram bot — MVP DONE, next steps below
-The on-demand MVP described here is built (see §3.6). The original build plan is
-kept for reference; the remaining item is step 7 (scheduled push).
+### 4.1 Telegram bot — DONE (original build plan kept for reference)
+The on-demand bot, scheduled push and follow-ups are built (see §3.6). The plan
+below is the original brief, kept for reference.
 
 **Build steps:**
 1. **Create the bot:** talk to `@BotFather` on Telegram → get a bot token → set
@@ -195,8 +221,8 @@ Free/Pro limits enforced; `tsc`/tests/build green.
 ### 4.2 WhatsApp bot — NOT STARTED (future)
 Needs the **official WhatsApp Business API** (via Meta or Twilio): business
 verification, template approval, and per-message cost. Do this **after** Telegram
-proves the product. Design the bot logic to be channel-agnostic so WhatsApp reuses
-the same signal + formatting layer.
+proves the product. The bot core is already channel-agnostic
+(`src/services/bot/*`): WhatsApp needs only a `ChannelAdapter` and a `BotStore`.
 
 ### 4.3 Activate Phase 2 (crypto payments) — when going live
 See §3.4 — just needs keys + a public URL + dashboard config.
@@ -205,28 +231,38 @@ See §3.4 — just needs keys + a public URL + dashboard config.
 Every scheduled route authorizes with `isCronAuthorized`
 (`src/lib/server/cron-auth.ts`: constant-time compare of
 `Authorization: Bearer <CRON_SECRET>`, fails closed in production when the secret
-is unset). Current schedule in `vercel.json` (UTC):
+is unset). Daily schedule in `vercel.json` (UTC):
 
 | Route | Schedule | Job |
 |---|---|---|
 | `/api/anchor/run` | 01:30 daily | Build + anchor Merkle roots for completed days |
-| `/api/signals/evaluate` | 04:00 daily | Score signals that are at least 24h old |
-| `/api/engine/tick` | 05:00 daily | Paper-trading order engine (limits, stops) |
+| `/api/subscriptions/expire` | 03:00 daily | Downgrade lapsed one-off crypto Pro |
+| `/api/ops/prune` | 03:15 daily | 30-day retention for `error_events` / `cron_runs` |
+| `/api/signals/evaluate` | 04:00 daily (+ hourly via GitHub) | Score signals that are at least 24h old |
+| `/api/telegram/followups` | 04:15 daily (+ hourly via GitHub) | Tell Telegram users how scored calls ended |
+| `/api/engine/tick` | 05:00 daily (+ hourly via GitHub) | Paper-trading order engine (limits, stops) |
 | `/api/discover/scan` | 06:00 daily | Opportunity scanner |
 | `/api/staking/refresh` | 07:00 daily | Refresh simulated staking APYs (DefiLlama) |
 | `/api/brief/generate` | 08:00 daily | Daily market brief |
 | `/api/dca/run` | 09:00 daily | Paper DCA plans |
+| `/api/telegram/push` | 13:00 daily | Daily alerts for linked Pro chats |
 
-Vercel Hobby only allows daily crons, which is why evaluation and the engine run
-once a day. For a tighter cadence (hourly evaluation, frequent engine ticks) use
-Vercel Pro or an external scheduler (cron-job.org / QStash) sending the same
-Bearer header.
+Vercel Hobby only allows daily crons, so `.github/workflows/scheduler.yml` also
+calls `/api/engine/tick`, `/api/signals/evaluate` and `/api/telegram/followups`
+every hour (repo secrets `APP_URL` and `CRON_SECRET`). For near-real-time
+stop-losses point an external scheduler at `/api/engine/tick` every 1-2 minutes.
 
-Monitoring: each cron returns a JSON summary of what it did (or why it did
-nothing) and logs errors to the Vercel function logs. Check those logs after
-deploys and whenever the track record stops growing. An anchor run that builds no
-roots for several days, or an evaluation run that keeps returning `evaluated: 0`
-while signals are pending, means a cron is not firing or is failing.
+Monitoring: every cron is wrapped in `withCronMonitoring`, which records the run
+in `cron_runs` and reports failures through `reportError` (one scrubbed JSON log
+line, a row in `error_events`, and an optional Telegram alert to
+`ALERT_TELEGRAM_CHAT_ID`, throttled to one per error type per 10 minutes).
+`GET /api/ops/status` (Bearer `CRON_SECRET`) shows each job's last run, last
+success and staleness; `?strict=1` answers 503 when anything needs attention and
+the hourly scheduler's health job turns red. Jobs whose feature is not configured
+(no Telegram bot, no Anthropic key) are shown as disabled, not degraded.
+`GET /api/health` is a public liveness probe. A new cron must be added to
+`CRON_JOBS` in `src/lib/server/cron-monitor.ts` and to `vercel.json` (a unit test
+checks they match).
 
 ### 4.5 Move anchoring to mainnet — when ready
 Deploy `TrackRecordAnchor.sol` to a mainnet L2 (e.g. Base), fund the signer, and
@@ -257,7 +293,8 @@ All documented in `.env.local.example`. Groups:
 - **Core:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
   `SUPABASE_SERVICE_ROLE_KEY` (server-only), `CRON_SECRET`, `ANTHROPIC_API_KEY`,
   `NEXT_PUBLIC_APP_URL`.
-- **Stripe:** publishable/secret/webhook + price ids.
+- **Stripe:** publishable/secret/webhook + `STRIPE_PRO_MONTHLY_PRICE_ID`,
+  `STRIPE_PRO_YEARLY_PRICE_ID` (server-only; yearly checkout is refused until set).
 - **Crypto payments (NOWPayments):** `NOWPAYMENTS_API_KEY`, `NOWPAYMENTS_IPN_SECRET`,
   `NOWPAYMENTS_API_URL`.
 - **On-chain anchoring:** `ANCHOR_RPC_URL`, `ANCHOR_SIGNER_KEY` (server-only),
@@ -267,6 +304,9 @@ All documented in `.env.local.example`. Groups:
   `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, `ZEROX_API_KEY`, …
 - **Telegram:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` (server-only),
   `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` (public bot handle for links).
+- **Ops:** `ALERT_TELEGRAM_CHAT_ID` (optional admin alerts),
+  `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (rate limits shared across
+  instances; without them limits are not enforced).
 
 > Secrets that must never be `NEXT_PUBLIC_*` or committed: service-role key,
 > `ANCHOR_SIGNER_KEY` (a wallet private key), Stripe secret, NOWPayments keys,
@@ -281,8 +321,10 @@ All documented in `.env.local.example`. Groups:
   (use this in the bot).
 - `src/services/analyst.service.ts` — shared analyst (the web route
   `src/app/api/ai/analyst/route.ts` and the Telegram bot both use it).
-- `src/app/api/telegram/*`, `src/services/telegram/*`, `src/lib/telegram/api.ts` —
-  Telegram bot.
+- `src/services/bot/*` — channel-agnostic bot core; `src/app/api/telegram/*`,
+  `src/services/telegram/*`, `src/lib/telegram/*` — the Telegram channel.
+- `src/lib/server/report-error.ts`, `src/lib/server/cron-monitor.ts`,
+  `src/app/api/ops/*`, `src/app/api/health` — error reporting and cron health.
 - `src/app/api/signals/evaluate/route.ts` — server signal finalization (cron).
 - `src/app/api/anchor/*`, `src/lib/merkle.ts`, `src/app/verify/page.tsx`,
   `contracts/` — verifiable track record.
