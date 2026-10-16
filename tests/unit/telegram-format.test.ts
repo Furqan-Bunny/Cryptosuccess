@@ -5,9 +5,9 @@
 import {
   formatSignal, welcomeMessage, helpMessage, verifyMessage,
   parseFirstNumber, parseRangeMid, BANNED_PHRASES,
-} from '@/services/telegram/format';
+} from '@/services/bot/format';
 import { splitForTelegram, secretsMatch } from '@/lib/telegram/api';
-import { buildSignalRecord } from '@/services/telegram/record';
+import { buildSignalRecord, TELEGRAM_READ_PREFIX } from '@/services/bot/record';
 import type { AnalystTake } from '@/services/analyst.service';
 
 const VERIFY = 'https://app.example.com/verify';
@@ -161,6 +161,11 @@ describe('buildSignalRecord', () => {
     expect(buildSignalRecord(t, 2010)).toBeNull();
     expect(buildSignalRecord(take(), 0)).toBeNull();
     expect(buildSignalRecord(take(), NaN)).toBeNull();
+  });
+
+  it('marks the reasoning with the Telegram prefix the follow-up cron selects on', () => {
+    expect(buildSignalRecord(take(), 2010)?.reasoning.startsWith(TELEGRAM_READ_PREFIX)).toBe(true);
+    expect(TELEGRAM_READ_PREFIX).toBe('Telegram analyst read');
   });
 
   it('records HOLD as a neutral flat call', () => {

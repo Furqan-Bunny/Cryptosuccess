@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { secretsMatch } from '@/lib/telegram/api';
+import { secretsMatch, setWebhook, setMyCommands, getWebhookInfo, getMe } from '@/lib/telegram/api';
+import { resolveBaseUrl } from '@/lib/telegram/env';
 
 // One-shot, self-service webhook registration for the DEPLOYED bot. After
 // deploying to Vercel (with TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET set),
@@ -8,26 +9,10 @@ import { secretsMatch } from '@/lib/telegram/api';
 //   https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 //
 // It points Telegram at THIS deployment's /api/telegram/webhook (URL derived from
-// the request, so it's always correct) and sets the command menu. Guarded by the
-// webhook secret so randoms can't hijack the bot's webhook.
+// the request, so it's always correct) and sets the command menu from the shared
+// command catalogue (services/bot/commands.ts). Guarded by the webhook secret so
+// randoms can't hijack the bot's webhook. Re-run it after adding commands.
 export const dynamic = 'force-dynamic';
-
-function baseUrl(request: NextRequest): string {
-  const env = process.env.NEXT_PUBLIC_APP_URL;
-  if (env && !/localhost/.test(env)) return env.replace(/\/$/, '');
-  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
-  const proto = request.headers.get('x-forwarded-proto') || 'https';
-  return host ? `${proto}://${host}` : (env || 'http://localhost:3000');
-}
-
-const COMMANDS = [
-  { command: 'start', description: 'Intro & how the honest coach works' },
-  { command: 'signal', description: 'Honest read on a coin, e.g. /signal BTC' },
-  { command: 'verify', description: 'Our provable on-chain track record' },
-  { command: 'link', description: 'Connect your CryptoSuccess account' },
-  { command: 'subscribe', description: 'Go Pro (unlimited signals)' },
-  { command: 'help', description: 'All commands' },
-];
 
 export async function GET(request: NextRequest) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -48,35 +33,21 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const call = (method: string, body: Record<string, unknown>) =>
-    fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(r => r.json());
-
-  const webhookUrl = `${baseUrl(request)}/api/telegram/webhook`;
+  const webhookUrl = `${resolveBaseUrl(request.headers)}/api/telegram/webhook`;
 
   try {
-    const setWebhook = await call('setWebhook', {
-      url: webhookUrl,
-      secret_token: secret,
-      allowed_updates: ['message'],
-      drop_pending_updates: true,
-    });
-    await call('setMyCommands', { commands: COMMANDS });
-    const info = await call('getWebhookInfo', {});
-    const me = await call('getMe', {});
+    await setWebhook(webhookUrl, secret);
+    await setMyCommands();
+    const info = await getWebhookInfo();
+    const me = await getMe();
 
     return NextResponse.json({
-      ok: !!setWebhook.ok,
-      message: setWebhook.ok
-        ? `✅ Bot is live. Open Telegram and message @${me?.result?.username ?? 'your bot'} — send /start.`
-        : '❌ setWebhook failed — see details.',
+      ok: true,
+      message: `✅ Bot is live. Open Telegram and message @${me?.username ?? 'your bot'} — send /start.`,
       webhookUrl,
-      bot: me?.result?.username ? `@${me.result.username}` : undefined,
-      setWebhook,
-      webhookInfo: info?.result,
+      bot: me?.username ? `@${me.username}` : undefined,
+      // Diagnostics only — never echo the token or secret.
+      webhookInfo: info ? { url: info.url, pending_update_count: info.pending_update_count, last_error_message: info.last_error_message } : undefined,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? 'setup failed' }, { status: 502 });
