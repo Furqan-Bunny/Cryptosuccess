@@ -65,6 +65,7 @@ class StakingService {
       const balance = await paperAccountService.getBalance(uid);
       if (amountUsd > balance) return { success: false, error: 'Insufficient paper balance' };
 
+      // Debit first (overdraft-guarded); if this throws, nothing is staked.
       await paperAccountService.adjustBalance(uid, -amountUsd);
       const { error } = await supabase.from('staking_positions').insert({
         user_id: uid,
@@ -73,7 +74,16 @@ class StakingService {
         apy_snapshot: apy,
         active: true,
       });
-      if (error) throw new Error(error.message);
+      if (error) {
+        // Compensate: the principal was already debited, so return it.
+        try {
+          await paperAccountService.adjustBalance(uid, amountUsd);
+        } catch (refundErr) {
+          console.error('Stake refund after failed insert also failed:', refundErr);
+          return { success: false, error: `${error.message}. Your funds could not be returned automatically — please contact support.` };
+        }
+        return { success: false, error: `${error.message}. Your funds were returned.` };
+      }
       return { success: true };
     } catch (error: any) {
       console.error('Error staking:', error);
@@ -93,13 +103,32 @@ class StakingService {
       if (pos.userId !== uid) return { success: false, error: 'Unauthorized' };
       if (!pos.active) return { success: false, error: 'Already unstaked' };
 
-      const rewards = accruedRewards(pos);
+      const closedAt = new Date().toISOString();
+      const rewards = accruedRewards({ ...pos, active: false, closedAt });
       const returned = pos.amountUsd + rewards;
-      await paperAccountService.adjustBalance(uid, returned);
-      await supabase
+
+      // Deactivate FIRST, conditional on still being active, and only pay out if
+      // this call made the transition — a double click can't pay twice.
+      const { data: closed, error: closeErr } = await supabase
         .from('staking_positions')
-        .update({ active: false, closed_at: new Date().toISOString() })
-        .eq('id', positionId);
+        .update({ active: false, closed_at: closedAt })
+        .eq('id', positionId)
+        .eq('active', true)
+        .select('id');
+      if (closeErr) throw new Error(closeErr.message);
+      if (!closed || closed.length !== 1) return { success: false, error: 'Already unstaked' };
+
+      try {
+        await paperAccountService.adjustBalance(uid, returned);
+      } catch (creditErr) {
+        // Re-activate so the user can retry instead of losing the principal.
+        await supabase
+          .from('staking_positions')
+          .update({ active: true, closed_at: null })
+          .eq('id', positionId)
+          .eq('active', false);
+        throw creditErr;
+      }
       return { success: true, returned };
     } catch (error: any) {
       console.error('Error unstaking:', error);

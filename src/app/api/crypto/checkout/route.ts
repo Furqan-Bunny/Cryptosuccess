@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { SUBSCRIPTION_PLANS } from '@/types/subscription.types';
+import { expectedCryptoPriceUsd, isCryptoPlan } from '@/lib/subscription-rules';
+import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,13 +31,28 @@ export async function POST(request: NextRequest) {
     }
     const user = userData.user;
 
-    const { billingInterval, redirectUrl, cancelUrl } = await request.json();
-    const interval: 'monthly' | 'yearly' = billingInterval === 'yearly' ? 'yearly' : 'monthly';
-    // Price is server-authoritative (never trust a client-supplied amount).
-    const amount = SUBSCRIPTION_PLANS.pro.price[interval];
+    const body = await request.json().catch(() => null);
+    const interval: 'monthly' | 'yearly' = body?.billingInterval === 'yearly' ? 'yearly' : 'monthly';
+    // Price is server-authoritative (never trust a client-supplied amount). The
+    // IPN webhook re-checks the paid invoice against this same figure.
+    const amount = expectedCryptoPriceUsd(interval);
 
-    // Public base URL for the IPN callback (must be reachable by NOWPayments).
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
+    // An active card subscriber would be paying twice — point them at billing
+    // instead. A crypto Pro may pay again: the webhook extends their period.
+    const { data: profile } = await db
+      .from('profiles')
+      .select('subscription_status, plan_id')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profile?.subscription_status === 'pro' && profile.plan_id && !isCryptoPlan(profile.plan_id)) {
+      return NextResponse.json({ available: false, reason: 'already_subscribed' }, { status: 409 });
+    }
+
+    // Public base URL for the IPN callback (must be reachable by NOWPayments),
+    // and the only origin the hosted invoice may send the user back to.
+    const appUrl = trustedAppOrigin(process.env.NEXT_PUBLIC_APP_URL, request.url);
+    const redirectUrl = sameOriginUrl(body?.redirectUrl, appUrl) ?? `${appUrl}/subscription/success`;
+    const cancelUrl = sameOriginUrl(body?.cancelUrl, appUrl) ?? `${appUrl}/pricing`;
 
     const resp = await fetch(`${API}/invoice`, {
       method: 'POST',

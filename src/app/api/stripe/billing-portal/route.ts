@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { getUidFromToken, createServiceClient } from '@/lib/supabase/server';
+import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -45,10 +46,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Stripe sends the user back to return_url — only our own site is allowed.
+    const origin = trustedAppOrigin(process.env.NEXT_PUBLIC_APP_URL, request.url);
+    const safeReturnUrl = sameOriginUrl(returnUrl, origin) ?? `${origin}/dashboard`;
+
     const stripe = getStripe();
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: returnUrl || `${process.env.NEXT_PUBLIC_APP_URL || ''}/dashboard`,
+      return_url: safeReturnUrl,
     });
 
     return NextResponse.json({ url: session.url });

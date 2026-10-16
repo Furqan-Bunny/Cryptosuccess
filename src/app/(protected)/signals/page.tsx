@@ -12,7 +12,7 @@ import { authService } from '@/services/auth.service';
 import { marketService } from '@/services/market.service';
 import { buildSignalReport, SignalReportData } from '@/services/signal-report.service';
 import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
-import { signalHistoryService } from '@/services/signal-history.service';
+import { signalHistoryService, SignalRecordError } from '@/services/signal-history.service';
 import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
 import { HORIZONS, DEFAULT_HORIZON, getHorizon } from '@/lib/horizons';
 import { FaCrown, FaPlus, FaTimes, FaSearch, FaFlask, FaStar, FaClock } from 'react-icons/fa';
@@ -84,42 +84,102 @@ export default function SignalsPage() {
     }
   };
 
+  const showUpgradeToast = () => {
+    toast.error(
+      () => (
+        <span>
+          Daily signal limit reached.{' '}
+          <Link href="/pricing" className="underline font-semibold">Upgrade to Pro</Link>{' '}
+          for unlimited signals.
+        </span>
+      ),
+      { id: 'signal-limit' }
+    );
+  };
+
+  // Map a failed record call to a plain-language message. Only `limit_reached`
+  // and a successful record ever spend a credit; every other failure is free
+  // (or refunded server-side).
+  const handleRecordError = (e: unknown) => {
+    if (!(e instanceof SignalRecordError)) {
+      console.error('Error recording signal:', e);
+      toast.error('Failed to generate signal. Please try again.');
+      return;
+    }
+    if (typeof e.remaining === 'number' && e.remaining >= 0) {
+      setSignalLimit({ allowed: e.remaining > 0, remaining: e.remaining });
+    }
+    switch (e.reason) {
+      case 'limit_reached':
+        setSignalLimit({ allowed: false, remaining: 0 });
+        showUpgradeToast();
+        break;
+      case 'stale_price':
+        toast.error('The price moved while the signal was being built. Please generate it again.');
+        break;
+      case 'rate_limited':
+        toast.error('Too many signals in a short time. Please wait a minute and try again.');
+        break;
+      case 'price_unavailable':
+      case 'quota_unavailable':
+        toast.error('Signals are temporarily unavailable. No credit was used — please try again shortly.');
+        break;
+      case 'record_failed':
+        toast.error('The signal could not be saved, so your credit was returned. Please try again.');
+        break;
+      case 'unauthorized':
+        toast.error('Your session has expired. Please sign in again.');
+        break;
+      default:
+        console.error('Signal record rejected:', e.reason, e.status);
+        toast.error('This signal could not be recorded. Please try again.');
+    }
+  };
+
   const generate = async (symbol: string) => {
+    if (!user) return;
     if (!isPro && !signalLimit.allowed) {
-      toast.error('Daily signal limit reached. Upgrade to Pro for unlimited signals!');
+      showUpgradeToast();
       return;
     }
     setLoadingSymbol(symbol);
     try {
       const report = await buildSignalReport(symbol, horizon);
 
+      // Record FIRST. The server spends the daily credit (atomic, UTC-correct,
+      // fail-closed), prices the entry on live spot and timestamps it — this is
+      // what lands in the verifiable track record. Nothing is shown until it
+      // succeeds, so a rejected generation never looks like a recorded call.
+      let recorded;
+      try {
+        recorded = await signalHistoryService.storeSignal({
+          symbol: report.signal.symbol,
+          action: report.signal.action,
+          confidence: report.signal.confidence,
+          entryPrice: report.signal.price,
+          targetPrice: report.signal.targetPrice,
+          stopLoss: report.signal.stopLoss,
+          reasoning: report.signal.reasoning,
+          horizon,
+        });
+      } catch (e) {
+        handleRecordError(e);
+        return;
+      }
+      // Trust the server's count, not a local decrement.
+      if (recorded.remaining >= 0) {
+        setSignalLimit({ allowed: recorded.remaining > 0, remaining: recorded.remaining });
+      }
+
       setReports(prev => [report, ...prev.filter(r => r.signal.symbol !== symbol)]);
 
       // Fetch the Claude analyst read in the background (automatic per signal).
-      // The daily free-tier limit is consumed server-side inside this call
-      // (atomic + UTC-correct), so refresh the displayed allowance once it settles.
+      // It spends no extra credit: the server only checks that this signal was
+      // just recorded.
       setAnalyst(prev => ({ ...prev, [symbol]: { loading: true, take: null } }));
       getAnalystTake(report)
         .then(take => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take } })))
-        .catch(() => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take: null } })))
-        .finally(() => { if (user && !isPro) checkSignalLimit(); });
-
-      if (user) {
-        try {
-          await signalHistoryService.storeSignal({
-            userId: user.uid,
-            symbol: report.signal.symbol,
-            action: report.signal.action,
-            confidence: report.signal.confidence,
-            entryPrice: report.signal.price,
-            targetPrice: report.signal.targetPrice,
-            stopLoss: report.signal.stopLoss,
-            reasoning: report.signal.reasoning,
-          });
-        } catch (e) {
-          console.error('Error storing signal:', e);
-        }
-      }
+        .catch(() => setAnalyst(prev => ({ ...prev, [symbol]: { loading: false, take: null } })));
 
       toast.success(`${report.signal.action} signal generated for ${symbol}`, {
         icon: report.signal.action === 'BUY' ? '📈' : report.signal.action === 'SELL' ? '📉' : '⏸️',

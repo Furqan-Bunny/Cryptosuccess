@@ -14,25 +14,42 @@ const getStripe = () => {
   return stripePromise;
 };
 
+// Only Pro is sellable: the profiles table stores free | pro | cancelled, so a
+// "premium" / "enterprise" payment could never be granted.
+export type SellablePlan = 'pro';
+export type BillingInterval = 'monthly' | 'yearly';
+
 export interface CheckoutSessionData {
-  priceId: string;
-  userId: string;
-  userEmail: string;
+  plan: SellablePlan;
+  interval: BillingInterval;
   successUrl: string;
   cancelUrl: string;
 }
 
+export interface CheckoutSession {
+  sessionId: string;
+  url?: string | null;
+}
+
+/** Thrown when the user picks a tier we don't sell. */
+export class PlanNotAvailableError extends Error {
+  constructor(planId: string) {
+    super(`The ${planId.split('_')[0] || planId} plan is not available for purchase yet.`);
+    this.name = 'PlanNotAvailableError';
+  }
+}
+
 class StripeService {
-  // Create a checkout session
-  async createCheckoutSession(data: CheckoutSessionData): Promise<string | null> {
+  // Create a checkout session. The server picks the Stripe price from
+  // {plan, interval} and derives the user from the access token — the body
+  // carries no price id and no identity.
+  async createCheckoutSession(data: CheckoutSessionData): Promise<CheckoutSession | null> {
     try {
-      // The server derives the userId from this token, not from the body.
       const { supabase } = await import('@/lib/supabase/client');
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
       if (!token) throw new Error('Not authenticated');
 
-      // Call your API endpoint to create session
       const response = await fetch('/api/stripe/checkout', {
         method: 'POST',
         headers: {
@@ -43,11 +60,12 @@ class StripeService {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create checkout session');
+        const err = await response.json().catch(() => null);
+        throw new Error(err?.error || 'Failed to create checkout session');
       }
 
-      const { sessionId } = await response.json();
-      return sessionId;
+      const { sessionId, url } = await response.json();
+      return sessionId ? { sessionId, url } : null;
     } catch (error) {
       console.error('Error creating checkout session:', error);
       return null;
@@ -69,36 +87,27 @@ class StripeService {
     }
   }
 
-  // Create subscription checkout
-  async createSubscriptionCheckout(
-    userId: string,
-    userEmail: string,
-    plan: 'pro' | 'enterprise'
-  ): Promise<void> {
+  // Create subscription checkout for a sellable plan + billing interval.
+  async createSubscriptionCheckout(plan: SellablePlan, interval: BillingInterval): Promise<void> {
     try {
-      // Price IDs should be configured in environment variables
-      const priceId = plan === 'pro'
-        ? process.env.NEXT_PUBLIC_STRIPE_PRO_PRICE_ID
-        : process.env.NEXT_PUBLIC_STRIPE_ENTERPRISE_PRICE_ID;
-
-      if (!priceId) {
-        throw new Error(`Price ID for ${plan} plan not configured`);
-      }
-
       const sessionData: CheckoutSessionData = {
-        priceId,
-        userId,
-        userEmail,
+        plan,
+        interval,
         successUrl: `${window.location.origin}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
         cancelUrl: `${window.location.origin}/pricing`,
       };
 
-      const sessionId = await this.createCheckoutSession(sessionData);
-      if (!sessionId) {
+      const checkout = await this.createCheckoutSession(sessionData);
+      if (!checkout) {
         throw new Error('Failed to create checkout session');
       }
 
-      await this.redirectToCheckout(sessionId);
+      // Prefer the hosted URL Stripe returns; fall back to Stripe.js.
+      if (checkout.url) {
+        window.location.href = checkout.url;
+        return;
+      }
+      await this.redirectToCheckout(checkout.sessionId);
     } catch (error) {
       console.error('Error creating subscription checkout:', error);
       throw error;
@@ -158,22 +167,25 @@ class StripeService {
     console.log(`Payment success for session: ${sessionId}`);
   }
 
-  // Subscribe to a plan
-  async subscribeToPlan(planId: string, interval: 'monthly' | 'yearly'): Promise<void> {
+  // Subscribe to a plan. `planId` is a SUBSCRIPTION_PLANS id ('pro_monthly', …);
+  // the interval picks the Stripe price on the server. Anything but Pro throws
+  // PlanNotAvailableError — premium / enterprise can't be stored or granted.
+  async subscribeToPlan(planId: string, interval: BillingInterval): Promise<void> {
     try {
-      // Get current user from auth
+      if (planId !== 'pro' && planId !== 'pro_monthly' && planId !== 'pro_yearly') {
+        throw new PlanNotAvailableError(planId);
+      }
+      if (interval !== 'monthly' && interval !== 'yearly') {
+        throw new Error('Invalid billing interval');
+      }
+
       const { supabase } = await import('@/lib/supabase/client');
       const { data: { user } } = await supabase.auth.getUser();
-
       if (!user) {
         throw new Error('User not authenticated');
       }
 
-      await this.createSubscriptionCheckout(
-        user.id,
-        user.email || '',
-        planId === 'pro_monthly' || planId === 'pro_yearly' ? 'pro' : 'enterprise'
-      );
+      await this.createSubscriptionCheckout('pro', interval);
     } catch (error) {
       console.error('Error subscribing to plan:', error);
       throw error;
