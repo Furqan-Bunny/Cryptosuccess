@@ -65,3 +65,34 @@ const BY_ID: Record<string, Horizon> = HORIZONS.reduce((acc, h) => {
 export function getHorizon(id: string): Horizon {
   return BY_ID[id] ?? BY_ID[DEFAULT_HORIZON];
 }
+
+// Floor for a level below the entry, as a fraction of the entry price. On long
+// horizons a volatile coin's ATR can be a large share of its price, so
+// "price - k * ATR" can reach zero or below — an impossible level that the
+// record route rightly rejects. Capping the distance at 95% keeps every level a
+// real, positive price without changing the indicator maths.
+export const MIN_LEVEL_FRACTION = 0.05;
+
+/**
+ * Stop / target for a horizon signal from ATR multiples, with any level that
+ * would sit below the entry kept at or above MIN_LEVEL_FRACTION of the price.
+ * BUY / HOLD: stop below, target above. SELL: stop above, target below.
+ */
+export function horizonLevels(
+  action: 'BUY' | 'SELL' | 'HOLD',
+  price: number,
+  atr: number,
+  multiples: { stop: number; target: number }
+): { stopLoss: number; targetPrice: number } {
+  const floor = price * MIN_LEVEL_FRACTION;
+  if (action === 'SELL') {
+    return {
+      stopLoss: price + multiples.stop * atr,
+      targetPrice: Math.max(price - multiples.target * atr, floor),
+    };
+  }
+  return {
+    stopLoss: Math.max(price - multiples.stop * atr, floor),
+    targetPrice: price + multiples.target * atr,
+  };
+}

@@ -162,7 +162,8 @@ function VerifyInner() {
     <div className="max-w-2xl mx-auto p-6">
       <h1 className="text-2xl font-semibold text-white mb-2">Verify a signal on-chain</h1>
       <p className="text-text-secondary mb-4">
-        Once a signal is at least 24 hours old our server scores it. Each day&apos;s scored
+        Once a signal is at least 24 hours old our server scores it against a single price check
+        (moves before that check are not counted). Each day&apos;s scored
         results are hashed into a Merkle tree and its root is written to a smart contract on{' '}
         {NETWORK}. Paste a signal ID to check that its scored result was included and has not been
         edited since. The hashing and proof checks run in your browser, and the final step reads

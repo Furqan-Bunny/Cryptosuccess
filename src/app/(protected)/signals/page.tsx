@@ -11,7 +11,7 @@ import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
 import { isProSubscription } from '@/lib/signal-allowance';
 import { marketService } from '@/services/market.service';
-import { buildSignalReport, SignalReportData } from '@/services/signal-report.service';
+import { buildSignalReport, SignalReportData, withRecordedLevels } from '@/services/signal-report.service';
 import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
 import { signalHistoryService, SignalRecordError } from '@/services/signal-history.service';
 import { COINS, isSupportedCoin, isAiProfiled, getCoinName, getCoinIcon } from '@/lib/coins';
@@ -145,7 +145,7 @@ export default function SignalsPage() {
     }
     setLoadingSymbol(symbol);
     try {
-      const report = await buildSignalReport(symbol, horizon);
+      const built = await buildSignalReport(symbol, horizon);
 
       // Record FIRST. The server spends the daily credit (atomic, UTC-correct,
       // fail-closed), prices the entry on live spot and timestamps it — this is
@@ -154,19 +154,23 @@ export default function SignalsPage() {
       let recorded;
       try {
         recorded = await signalHistoryService.storeSignal({
-          symbol: report.signal.symbol,
-          action: report.signal.action,
-          confidence: report.signal.confidence,
-          entryPrice: report.signal.price,
-          targetPrice: report.signal.targetPrice,
-          stopLoss: report.signal.stopLoss,
-          reasoning: report.signal.reasoning,
+          symbol: built.signal.symbol,
+          action: built.signal.action,
+          confidence: built.signal.confidence,
+          entryPrice: built.signal.price,
+          targetPrice: built.signal.targetPrice,
+          stopLoss: built.signal.stopLoss,
+          reasoning: built.signal.reasoning,
           horizon,
         });
       } catch (e) {
         handleRecordError(e);
         return;
       }
+      // Show exactly what was recorded: the server re-prices the entry on live
+      // spot (target and stop scaled to match), and that is what gets scored.
+      const report = recorded.levels ? withRecordedLevels(built, recorded.levels) : built;
+
       // Trust the server's count, not a local decrement.
       if (recorded.remaining >= 0) {
         setSignalLimit({ allowed: recorded.remaining > 0, remaining: recorded.remaining });

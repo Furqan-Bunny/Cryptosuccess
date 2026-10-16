@@ -62,6 +62,19 @@ export interface RecordedSignal {
 }
 
 /**
+ * Why a read was NOT written to the track record:
+ *   unlinked — the chat isn't linked to an account (signals need a user id),
+ *   price    — no live price to use as the entry,
+ *   levels   — the read's target/stop couldn't be parsed or contradict the live price,
+ *   error    — the insert failed.
+ */
+export type NotRecordedReason = 'unlinked' | 'price' | 'levels' | 'error';
+
+export type RecordOutcome =
+  | ({ recorded: true } & RecordedSignal)
+  | { recorded: false; reason: NotRecordedReason };
+
+/**
  * Per-channel persistence. Every method derives identity from the chat id the
  * channel verified — callers never pass a user id.
  */
@@ -70,13 +83,17 @@ export interface BotStore {
   redeemLink(chatId: string, code: string): Promise<LinkResult>;
   /** Atomically consume one signal credit. Throws on any DB failure (caller fails closed). */
   consumeSignal(chatId: string): Promise<QuotaGate>;
-  /** Give back a credit consumed for a read that could not be produced. */
-  refundSignal(chatId: string): Promise<void>;
+  /**
+   * Give back a credit consumed for a read that could not be produced. Resolves
+   * true only when a credit was actually returned (the RPC can legitimately
+   * refund nothing, e.g. after the UTC day rolled over). Throws on DB failure.
+   */
+  refundSignal(chatId: string): Promise<boolean>;
   getAccountStatus(chatId: string): Promise<AccountStatus>;
   getPrefs(chatId: string): Promise<ChatPrefs>;
   savePrefs(chatId: string, patch: PrefsPatch): Promise<void>;
-  /** Record a linked chat's call in the track record; null when not recorded. Never throws. */
-  recordSignal(chatId: string, symbol: string, analysis: AnalystTake): Promise<RecordedSignal | null>;
+  /** Record a linked chat's call in the track record, or say why it wasn't. Never throws. */
+  recordSignal(chatId: string, symbol: string, analysis: AnalystTake): Promise<RecordOutcome>;
 }
 
 export type RateLimiter = (name: string, id: string, limit: number, windowSec: number) => Promise<RateLimitResult>;

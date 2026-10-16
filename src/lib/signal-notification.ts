@@ -24,9 +24,11 @@ export interface SignalNotificationContent {
   data: { signalId: string };
 }
 
+// Scoring checks one price 24h after the call, not the path in between, so the
+// labels describe where the price was at that check (never "hit" / "stopped out").
 const OUTCOME_LABEL: Record<SignalOutcome, string> = {
-  hit_target: 'target reached',
-  hit_stop: 'stopped out',
+  hit_target: 'past target at 24h',
+  hit_stop: 'past stop at 24h',
   expired_profit: 'closed in profit',
   expired_loss: 'closed at a loss',
 };

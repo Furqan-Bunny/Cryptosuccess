@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase/client';
 import { computeSignalStats } from '@/lib/signal-stats';
+import { isValidLevels, type PriceLevels } from '@/lib/recorded-levels';
 
 export interface StoredSignal {
   id?: string;
@@ -52,6 +53,9 @@ export interface RecordSignalResult {
   id: string;
   // Free-tier signals left today after this one; -1 = unlimited (Pro).
   remaining: number;
+  // The levels the server actually recorded (entry re-priced on live spot), or
+  // null if the response didn't include them.
+  levels: PriceLevels | null;
 }
 
 /**
@@ -107,7 +111,8 @@ class SignalHistoryService {
     if (!res.ok || !data?.ok || typeof data.id !== 'string') {
       throw new SignalRecordError(String(data?.reason ?? 'error'), res.status, remaining);
     }
-    return { id: data.id, remaining: remaining ?? -1 };
+    const levels = { entryPrice: data.entryPrice, targetPrice: data.targetPrice, stopLoss: data.stopLoss };
+    return { id: data.id, remaining: remaining ?? -1, levels: isValidLevels(levels) ? levels : null };
   }
 
   async getUserSignals(userId: string, maxResults = 20): Promise<StoredSignal[]> {

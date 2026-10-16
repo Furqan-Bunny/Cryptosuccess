@@ -18,10 +18,11 @@ function getOutcomeStyle(outcome?: string) {
 
 function getOutcomeLabel(outcome?: string) {
   switch (outcome) {
-    case 'hit_target': return 'Target Hit';
-    case 'expired_profit': return 'Profit';
-    case 'hit_stop': return 'Stopped Out';
-    case 'expired_loss': return 'Loss';
+    // Scored on the single price 24h after the call, not the path in between.
+    case 'hit_target': return 'Past Target at 24h';
+    case 'expired_profit': return 'Profit at 24h';
+    case 'hit_stop': return 'Past Stop at 24h';
+    case 'expired_loss': return 'Loss at 24h';
     default: return 'Pending';
   }
 }

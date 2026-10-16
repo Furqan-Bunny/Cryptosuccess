@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { CRYPTO_REFUND_TERMS, REFUND_DAYS, SCORING_METHOD, TRACK_RECORD_SCOPE } from '@/lib/legal-copy';
 
 export const metadata: Metadata = {
   title: 'Terms of Service - CryptoSuccess',
@@ -10,8 +11,6 @@ export const metadata: Metadata = {
 // it must not be computed at render time.
 const LAST_UPDATED = '16 October 2026';
 
-// Single refund window, mirrored on the pricing page FAQ. Change both together.
-const REFUND_DAYS = 14;
 
 export default function TermsPage() {
   return (
@@ -133,10 +132,8 @@ export default function TermsPage() {
             <p className="text-text-secondary">
               If you are not satisfied, you can request a full refund within {REFUND_DAYS} days of
               your first Pro payment by emailing support. Renewal payments are not refunded, but you
-              can cancel before the next renewal at any time. Refunds for cryptocurrency payments
-              are paid in cryptocurrency to an address you provide, for the original USD amount,
-              less any network fees. This does not affect any rights you have under the consumer
-              law of your country.
+              can cancel before the next renewal at any time. {CRYPTO_REFUND_TERMS} This does not
+              affect any rights you have under the consumer law of your country.
             </p>
           </section>
 
@@ -165,9 +162,8 @@ export default function TermsPage() {
           <section className="mb-8">
             <h2 className="text-2xl font-semibold text-white mb-4">9. The Public Track Record</h2>
             <p className="text-text-secondary">
-              Signals generated through the service, including through the Telegram bot, are scored
-              automatically by our server once they are at least 24 hours old and become part of our
-              track record. Each day, finalized results are combined into a Merkle root that is
+              {TRACK_RECORD_SCOPE} {SCORING_METHOD} Scoring is automatic and done by our server.
+              Each day, finalized results are combined into a Merkle root that is
               written to a public blockchain (currently the Base Sepolia test network). Once
               written, an anchor cannot be changed or removed by anyone, including us. Anchored
               records identify a signal by random IDs, not by your name or email. See the{' '}

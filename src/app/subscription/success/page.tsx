@@ -7,14 +7,19 @@ import { FaCheckCircle, FaClock, FaSpinner } from 'react-icons/fa';
 import { useAuth } from '@/hooks/useAuth';
 import { authService } from '@/services/auth.service';
 import { isProSubscription } from '@/lib/signal-allowance';
+import {
+  clearCryptoBaseline, cryptoPaymentApplied, loadCryptoBaseline, type CryptoCheckoutBaseline,
+} from '@/lib/crypto-checkout-baseline';
 
 // Two checkout flows land here:
 //   - Stripe redirects with ?session_id=... once the card payment succeeds. The
 //     webhook activates Pro server-side, usually within seconds, so we poll the
 //     user's own profile a few times to confirm.
-//   - NOWPayments (crypto) redirects with no query string. Pro is only granted
+//   - NOWPayments (crypto) redirects with no session_id. Pro is only granted
 //     when the payment confirms on-chain (IPN webhook), which can take minutes,
-//     so we check once and explain what happens next instead of promising.
+//     so we check once and explain what happens next instead of promising. A
+//     crypto Pro paying to EXTEND is already Pro, so "active" is only shown
+//     once the period end has moved past the one recorded before checkout.
 // The page never trusts the URL to grant anything; it only reads the profile.
 type Flow = 'stripe' | 'crypto';
 type Phase = 'checking' | 'active' | 'pending' | 'signed_out' | 'error';
@@ -42,6 +47,11 @@ function SuccessInner() {
 
   const [phase, setPhase] = useState<Phase>('checking');
   const [periodEnd, setPeriodEnd] = useState<string | null>(null);
+  // Crypto only: Pro was already active but this payment hasn't landed yet
+  // (pending), or we can't tell whether it has (no checkout record in this tab).
+  const [activeUntil, setActiveUntil] = useState<string | null>(null);
+  const [extensionUnknown, setExtensionUnknown] = useState(false);
+  const baselineRef = useRef<CryptoCheckoutBaseline | null | undefined>(undefined);
   const [attempt, setAttempt] = useState(0); // bump to re-run the check
   const refreshRef = useRef(refreshProfile);
   refreshRef.current = refreshProfile;
@@ -60,16 +70,30 @@ function SuccessInner() {
     const maxAttempts = flow === 'stripe' ? STRIPE_POLL_ATTEMPTS : CRYPTO_POLL_ATTEMPTS;
     setPhase('checking');
 
+    if (flow === 'crypto' && baselineRef.current === undefined) baselineRef.current = loadCryptoBaseline();
+
     const check = async (n: number) => {
       try {
         const profile = await authService.getUserProfile(uid);
         if (cancelled) return;
         if (profile && isProSubscription(profile.subscription)) {
-          setPeriodEnd(formatDate(profile.subscription.currentPeriodEnd));
-          setPhase('active');
-          // Keep the rest of the app (sidebar, gates) in sync with the new plan.
-          refreshRef.current().catch(() => undefined);
-          return;
+          const endDate = profile.subscription.currentPeriodEnd;
+          const endMs = endDate ? new Date(endDate).getTime() : NaN;
+          const applied =
+            flow === 'crypto'
+              ? cryptoPaymentApplied(baselineRef.current ?? null, true, Number.isFinite(endMs) ? endMs : null)
+              : true;
+          if (applied !== false) {
+            setPeriodEnd(formatDate(endDate));
+            setExtensionUnknown(applied === null);
+            setPhase('active');
+            if (flow === 'crypto' && applied) clearCryptoBaseline();
+            // Keep the rest of the app (sidebar, gates) in sync with the new plan.
+            refreshRef.current().catch(() => undefined);
+            return;
+          }
+          // Already Pro, but this crypto payment hasn't confirmed yet.
+          setActiveUntil(formatDate(endDate));
         }
       } catch {
         if (cancelled) return;
@@ -142,6 +166,12 @@ function SuccessInner() {
               {flow === 'crypto' ? ' (crypto payments do not renew automatically).' : '.'}
             </p>
           )}
+          {extensionUnknown && (
+            <p className="text-sm text-text-secondary mb-6">
+              If you just paid to extend Pro, the extra time is added once the payment confirms
+              on the blockchain. Check the date above again in Settings later.
+            </p>
+          )}
 
           <div className="bg-gray-800/50 rounded-lg p-6 my-8">
             <h2 className="text-xl font-semibold text-white mb-4">What Pro includes</h2>
@@ -199,10 +229,18 @@ function SuccessInner() {
           </p>
         ) : isCrypto ? (
           <div className="text-text-secondary mb-6 space-y-3">
-            <p>
-              Pro is activated automatically as soon as the payment is confirmed on the blockchain.
-              Depending on the coin and network this can take from a few minutes to around an hour.
-            </p>
+            {activeUntil ? (
+              <p>
+                Your current Pro access runs until {activeUntil}. The extra time from this payment
+                is added to the end of it as soon as the payment is confirmed on the blockchain.
+                Depending on the coin and network this can take from a few minutes to around an hour.
+              </p>
+            ) : (
+              <p>
+                Pro is activated automatically as soon as the payment is confirmed on the blockchain.
+                Depending on the coin and network this can take from a few minutes to around an hour.
+              </p>
+            )}
             <p>
               You can safely close this page. If you sent less than the invoice amount, or the
               payment has not confirmed after a few hours, contact support with your invoice

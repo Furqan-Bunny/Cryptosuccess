@@ -13,6 +13,8 @@ import {
 import { TELEGRAM_READ_PREFIX } from '@/services/bot/record';
 
 const BATCH_LIMIT = 200;
+// Upper bound on rows scanned per run (pages of BATCH_LIMIT).
+const MAX_SCAN_PAGES = 10;
 
 export interface FollowUpJobDeps {
   db: SupabaseClient;
@@ -39,39 +41,56 @@ export async function runFollowUpJob(deps: FollowUpJobDeps): Promise<FollowUpJob
   const result: FollowUpJobResult = { candidates: 0, sent: 0, failed: 0, unreachable: 0, skipped: 0, stoppedEarly: false };
   const since = new Date(Date.now() - FOLLOWUP_LOOKBACK_MS).toISOString();
 
-  // Recently finalized calls that were given in Telegram.
-  const { data: rows, error } = await db
-    .from('signals')
-    .select('id, user_id, symbol, action, entry_price, target_price, stop_loss, outcome, profit_loss_percent, price_at_24h, reasoning, created_at, evaluated_at')
-    .like('reasoning', `${TELEGRAM_READ_PREFIX}%`)
-    .in('outcome', FINAL_OUTCOMES)
-    .gte('evaluated_at', since)
-    .order('evaluated_at', { ascending: true })
-    .limit(BATCH_LIMIT);
-  if (error) throw new Error(error.message);
-  if (!rows?.length) return result;
-
-  // Drop the ones already followed up.
-  const { data: done, error: dErr } = await db.from('telegram_followups').select('signal_id').in('signal_id', rows.map(r => r.id));
-  if (dErr) throw new Error(dErr.message);
-  const doneIds = new Set((done ?? []).map(d => d.signal_id as string));
-
+  // Recently finalized calls that were given in Telegram, NEWEST first, read in
+  // pages. Rows already followed up are dropped page by page, so they can never
+  // fill a batch and starve newer calls (a single oldest-first LIMIT let 200+
+  // already-sent rows block every new follow-up until they aged out). Sending is
+  // still bounded by the deadline and the per-chat cap below.
   const pending: Array<{ sig: FollowUpSignal; userId: string }> = [];
-  for (const row of rows) {
-    if (doneIds.has(row.id as string)) continue;
-    const sig = toFollowUpSignal(row);
-    if (!sig || typeof row.user_id !== 'string') { result.skipped += 1; continue; }
-    pending.push({ sig, userId: row.user_id });
+  for (let page = 0; page < MAX_SCAN_PAGES; page += 1) {
+    const from = page * BATCH_LIMIT;
+    const { data: rows, error } = await db
+      .from('signals')
+      .select('id, user_id, symbol, action, entry_price, target_price, stop_loss, outcome, profit_loss_percent, price_at_24h, reasoning, created_at, evaluated_at')
+      .like('reasoning', `${TELEGRAM_READ_PREFIX}%`)
+      .in('outcome', FINAL_OUTCOMES)
+      .gte('evaluated_at', since)
+      .order('evaluated_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + BATCH_LIMIT - 1);
+    if (error) throw new Error(error.message);
+    if (!rows?.length) break;
+
+    // Drop the ones already followed up.
+    const { data: done, error: dErr } = await db.from('telegram_followups').select('signal_id').in('signal_id', rows.map(r => r.id));
+    if (dErr) throw new Error(dErr.message);
+    const doneIds = new Set((done ?? []).map(d => d.signal_id as string));
+
+    for (const row of rows) {
+      if (doneIds.has(row.id as string)) continue;
+      const sig = toFollowUpSignal(row);
+      if (!sig || typeof row.user_id !== 'string') { result.skipped += 1; continue; }
+      pending.push({ sig, userId: row.user_id });
+    }
+    if (rows.length < BATCH_LIMIT) break;
   }
   result.candidates = pending.length;
   if (!pending.length) return result;
 
   // Where to send: the account's linked private chat (unlinked → skipped until
   // the lookback window passes).
+  // Looked up in chunks so the id list stays well inside URL limits.
   const userIds = Array.from(new Set(pending.map(p => p.userId)));
-  const { data: chats, error: cErr } = await db.from('telegram_users').select('telegram_id, user_id, updated_at').in('user_id', userIds);
-  if (cErr) throw new Error(cErr.message);
-  const chatByUser = pickFollowUpChat(chats ?? []);
+  const chats: Array<{ telegram_id: unknown; user_id: unknown; updated_at: unknown }> = [];
+  for (let i = 0; i < userIds.length; i += BATCH_LIMIT) {
+    const { data, error: cErr } = await db
+      .from('telegram_users')
+      .select('telegram_id, user_id, updated_at')
+      .in('user_id', userIds.slice(i, i + BATCH_LIMIT));
+    if (cErr) throw new Error(cErr.message);
+    chats.push(...(data ?? []));
+  }
+  const chatByUser = pickFollowUpChat(chats);
 
   const perChat = new Map<string, number>();
   for (const { sig, userId } of pending) {

@@ -8,7 +8,7 @@ import type { GenerateResult } from '@/services/analyst.service';
 import { isChatUnreachable } from '@/lib/telegram/api';
 import { formatPushDigest, type PushItem } from '@/services/bot/format';
 import { prefsFromRow } from '@/services/bot/prefs';
-import { pushCoinsFor, pushSkipReason, type PushSkipReason } from '@/services/bot/push';
+import { pushCoinsFor, pushCutoffIso, pushSkipReason, type PushSkipReason } from '@/services/bot/push';
 import { isEffectivePro } from '@/lib/subscription-rules';
 
 const BATCH_LIMIT = 500;
@@ -44,11 +44,13 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
   const result: PushJobResult = { scanned: 0, eligible: 0, sent: 0, failed: 0, disabled: 0, skipped: {}, stoppedEarly: false };
   const skip = (r: keyof PushJobResult['skipped']) => { result.skipped[r] = (result.skipped[r] ?? 0) + 1; };
 
-  // Opted-in chats, least-recently pushed first.
+  // Opted-in chats that are due (never pushed, or not within the minimum
+  // interval), least-recently pushed first.
   const { data: prefRows, error } = await db
     .from('telegram_prefs')
     .select('telegram_id, risk_level, coins, alerts_enabled, last_push_at')
     .eq('alerts_enabled', true)
+    .or(`last_push_at.is.null,last_push_at.lt.${pushCutoffIso(Date.now())}`)
     .order('last_push_at', { ascending: true, nullsFirst: true })
     .limit(BATCH_LIMIT);
   if (error) throw new Error(error.message);
@@ -81,6 +83,7 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
   }
 
   const now = Date.now();
+  const ineligible: number[] = [];
   const eligible = prefRows.filter(row => {
     const chatId = String(row.telegram_id);
     const userId = userByChat.get(chatId) ?? null;
@@ -92,9 +95,22 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
       chatId,
     }, now);
     if (reason) skip(reason);
+    if (reason === 'not_linked' || reason === 'not_pro' || reason === 'not_private') ineligible.push(row.telegram_id as number);
     return !reason;
   });
   result.eligible = eligible.length;
+
+  // Chats that keep alerts on but can't receive them (unlinked, Pro lapsed,
+  // group chat) would otherwise stay at the front of every batch, and enough of
+  // them would crowd out eligible Pro chats for good. Move them to the back of
+  // the queue (their setting is kept, so alerts resume if they link / renew).
+  if (ineligible.length) {
+    const { error: dErr } = await db
+      .from('telegram_prefs')
+      .update({ last_push_at: new Date(now).toISOString() })
+      .in('telegram_id', ineligible);
+    if (dErr) console.warn('push: could not defer ineligible chats:', dErr.message);
+  }
   if (!eligible.length) return result;
 
   // One live price fetch for every coin involved (cached takes can be hours old).

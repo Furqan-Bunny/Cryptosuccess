@@ -18,7 +18,7 @@ describe('buildSignalScoredNotification', () => {
     const { outcome, profitLossPercent } = deriveOutcome(signal, 97.9);
     const n = buildSignalScoredNotification({ ...base, action: 'BUY', outcome, profitLossPercent });
     expect(n.type).toBe('signal');
-    expect(n.title).toBe('BTC BUY scored: stopped out, -2.1%');
+    expect(n.title).toBe('BTC BUY scored: past stop at 24h, -2.1%');
     expect(n.message).toContain('-2.1%');
     expect(n.message).toMatch(/Losses are part of the record/);
     expect(n.data).toEqual({ signalId: 'sig-1' });
@@ -35,7 +35,7 @@ describe('buildSignalScoredNotification', () => {
       outcome,
       profitLossPercent,
     });
-    expect(n.title).toBe('ETH SELL scored: target reached, +11.0%');
+    expect(n.title).toBe('ETH SELL scored: past target at 24h, +11.0%');
     // No hype: a win is framed as one data point.
     expect(n.message).not.toMatch(/guarantee|100x/i);
     expect(n.message).toMatch(/full track record/);

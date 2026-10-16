@@ -33,8 +33,11 @@ export function buildSignalRecord(analysis: AnalystTake, livePrice: number): Sig
   const confidence = CONVICTION_CONFIDENCE[st.conviction] ?? 40;
   const reasoning = `${TELEGRAM_READ_PREFIX} (${st.horizon}): ${st.thesis}`.slice(0, 1000);
 
-  if (st.verdict === 'HOLD') {
-    // Non-directional: scored as neutral and excluded from the win rate.
+  // A HOLD, or a low-conviction BUY/SELL, is presented to the user as a
+  // STAY-OUT call (see formatSignal), so it is recorded as one: non-directional,
+  // scored as neutral and excluded from the win rate. Recording it as a trade
+  // would score the user on a call we told them not to take.
+  if (st.verdict === 'HOLD' || st.conviction === 'low') {
     return { action: 'HOLD', confidence, entryPrice: livePrice, targetPrice: livePrice, stopLoss: livePrice, reasoning };
   }
 

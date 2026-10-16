@@ -9,6 +9,7 @@ import { generateHorizonSignal } from './horizon-signal.service';
 import { getHorizon, DEFAULT_HORIZON } from '@/lib/horizons';
 import type { MtfResult } from './ai/mtf-confirmation';
 import type { Indicators } from '@/components/market/IndicatorPanel';
+import { levelStats, type PriceLevels } from '@/lib/recorded-levels';
 
 export interface SignalNarrative {
   summary: string;
@@ -137,12 +138,11 @@ export async function buildSignalReport(symbol: string, horizonId: string = DEFA
     sentimentValue = null;
   }
 
-  const entry = signal.price;
-  const risk = Math.abs(entry - signal.stopLoss);
-  const reward = Math.abs(signal.targetPrice - entry);
-  const riskReward = risk > 0 ? reward / risk : 0;
-  const potentialGainPct = entry > 0 ? ((signal.targetPrice - entry) / entry) * 100 : 0;
-  const potentialLossPct = entry > 0 ? ((signal.stopLoss - entry) / entry) * 100 : 0;
+  const { riskReward, potentialGainPct, potentialLossPct } = levelStats({
+    entryPrice: signal.price,
+    targetPrice: signal.targetPrice,
+    stopLoss: signal.stopLoss,
+  });
 
   const narrative = buildNarrative(symbol, signal, indicators, regime, sentimentValue, profile, potentialLossPct);
 
@@ -160,5 +160,34 @@ export async function buildSignalReport(symbol: string, horizonId: string = DEFA
     potentialLossPct,
     mtf: horizonSignal.mtf,
     horizonLabel: horizonSignal.horizonLabel,
+  };
+}
+
+/**
+ * The same report moved onto the levels the server recorded (live-spot entry,
+ * target and stop scaled to match), so what the user sees is exactly what gets
+ * scored and anchored.
+ */
+export function withRecordedLevels(report: SignalReportData, levels: PriceLevels): SignalReportData {
+  const signal = {
+    ...report.signal,
+    price: levels.entryPrice,
+    targetPrice: levels.targetPrice,
+    stopLoss: levels.stopLoss,
+  };
+  const stats = levelStats(levels);
+  return {
+    ...report,
+    signal,
+    ...stats,
+    narrative: buildNarrative(
+      signal.symbol,
+      signal,
+      report.indicators,
+      report.regime,
+      report.sentimentValue,
+      report.profile,
+      stats.potentialLossPct
+    ),
   };
 }

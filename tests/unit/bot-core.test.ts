@@ -7,7 +7,7 @@ import { DEFAULT_PREFS } from '@/services/bot/prefs';
 import { BOT_COMMANDS } from '@/services/bot/commands';
 import { helpMessage } from '@/services/bot/format';
 import type {
-  BotDeps, BotStore, ChatPrefs, IncomingMessage, QuotaGate, RateLimiter,
+  BotDeps, BotStore, ChatPrefs, IncomingMessage, QuotaGate, RateLimiter, RecordOutcome,
 } from '@/services/bot/types';
 import type { AnalystTake, GenerateResult } from '@/services/analyst.service';
 
@@ -48,6 +48,8 @@ interface FakeStore extends BotStore {
   account: { linked: boolean; pro: boolean };
   gate: QuotaGate;
   consumeThrows: boolean;
+  refundResult: boolean;
+  record: RecordOutcome;
   calls: Record<string, unknown[][]>;
 }
 
@@ -59,6 +61,8 @@ function fakeStore(): FakeStore {
     account: { linked: false, pro: false },
     gate: { allowed: true, remaining: 4, linked: false, pro: false },
     consumeThrows: false,
+    refundResult: true,
+    record: { recorded: false, reason: 'unlinked' },
     calls,
     async touch(...a) { log('touch', a); },
     async redeemLink(...a) { log('redeemLink', a); return a[1] === 'GOODCODE' ? { ok: true } : { ok: false, reason: 'invalid' }; },
@@ -67,11 +71,11 @@ function fakeStore(): FakeStore {
       if (store.consumeThrows) throw new Error('rpc missing');
       return store.gate;
     },
-    async refundSignal(...a) { log('refundSignal', a); },
+    async refundSignal(...a) { log('refundSignal', a); return store.refundResult; },
     async getAccountStatus(...a) { log('getAccountStatus', a); return store.account; },
     async getPrefs(...a) { log('getPrefs', a); return store.prefs; },
     async savePrefs(chatId, patch) { log('savePrefs', [chatId, patch]); store.prefs = { ...store.prefs, ...patch }; },
-    async recordSignal(...a) { log('recordSignal', a); return null; },
+    async recordSignal(...a) { log('recordSignal', a); return store.record; },
   };
   return store;
 }
@@ -179,6 +183,32 @@ describe('handleIncoming — metering + N14 refund', () => {
     await t.run('/signal BTC');
     expect(t.store.calls.refundSignal).toEqual([['42']]);
     expect(t.last()).toMatch(/didn't count against your daily signals/);
+  });
+
+  it('does not claim a refund when the store returned nothing', async () => {
+    const t = setup();
+    t.store.refundResult = false; // e.g. the UTC day rolled over during generation
+    t.analyst.mockResolvedValueOnce(null);
+    await t.run('/signal BTC');
+    expect(t.store.calls.refundSignal).toHaveLength(1);
+    expect(t.last()).not.toMatch(/didn't count against your daily signals/);
+    expect(t.last()).toMatch(/went wrong/);
+  });
+
+  it('tells a linked chat the real reason a read was not recorded (no /link hint)', async () => {
+    const t = setup();
+    t.store.gate = { allowed: true, remaining: 3, linked: true, pro: false };
+    t.store.record = { recorded: false, reason: 'levels' };
+    await t.run('/signal BTC');
+    expect(t.last()).toMatch(/NOT recorded/);
+    expect(t.last()).not.toMatch(/\/link/);
+  });
+
+  it('shows the /link hint to an unlinked chat at the daily limit', async () => {
+    const t = setup();
+    t.store.gate = { allowed: false, remaining: 0, linked: false, pro: false };
+    await t.run('/signal BTC');
+    expect(t.last()).toMatch(/\/link/);
   });
 
   it('refunds the credit when generation throws', async () => {

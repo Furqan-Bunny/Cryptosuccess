@@ -18,9 +18,14 @@ export const maxDuration = 60;
 
 const MAX_DAYS_PER_RUN = 5; // bound work; backfill catches up over subsequent runs
 
+// Signals outlive account deletion with user_id set to NULL (migration 0012).
+// The leaf format is frozen with a string userId, so a signal whose account was
+// deleted before it was anchored carries this fixed placeholder instead.
+const DELETED_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
+
 type LeafRow = {
   id: string;
-  user_id: string;
+  user_id: string | null;
   symbol: string;
   action: string;
   confidence: string | null;
@@ -36,7 +41,7 @@ type LeafRow = {
 function toLeafFields(r: LeafRow): LeafFields {
   return {
     id: r.id,
-    userId: r.user_id,
+    userId: r.user_id ?? DELETED_ACCOUNT_ID,
     symbol: r.symbol,
     action: r.action,
     confidence: r.confidence,

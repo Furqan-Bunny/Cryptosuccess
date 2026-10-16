@@ -1,11 +1,7 @@
 import { supabase } from '@/lib/supabase/client';
-import { marketService } from './market.service';
-import { paperAccountService } from './paper-account.service';
 import {
   FuturesPosition,
   PositionSide,
-  buildPosition,
-  computePnl,
   MAX_LEVERAGE,
   MIN_LEVERAGE,
 } from '@/lib/futures';
@@ -44,121 +40,87 @@ function mapPosition(row: any): FuturesPosition {
   };
 }
 
-// Client-side paper futures. Liquidation is enforced server-side by the engine
-// on the mark (spot) price.
+async function authHeaders(): Promise<Record<string, string> | null> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) return null;
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+const OPEN_ERRORS: Record<string, string> = {
+  insufficient_balance: 'Insufficient paper balance for this margin',
+  price_unavailable: 'Could not fetch the entry price. Please try again.',
+  pro_required: 'Futures are part of Pro.',
+  invalid_leverage: `Leverage must be between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x`,
+  invalid_margin: 'Margin must be greater than 0',
+  invalid_symbol: 'This coin is not supported',
+  rate_limited: 'Too many requests. Please wait a moment.',
+  unauthorized: 'Your session has expired. Please sign in again.',
+};
+
+const CLOSE_ERRORS: Record<string, string> = {
+  not_found: 'Position not found',
+  not_open: 'Position is no longer open',
+  price_unavailable: 'Could not fetch the mark price. Please try again.',
+  rate_limited: 'Too many requests. Please wait a moment.',
+  unauthorized: 'Your session has expired. Please sign in again.',
+};
+
+// Paper futures. Opening and closing go through the server
+// (/api/paper/futures/*), which prices the trade on live spot and moves the
+// paper cash atomically with the position row (migration 0012); the client never
+// supplies a price or a cash amount it could inflate. Liquidation is enforced
+// server-side by the engine on the mark (spot) price.
 class FuturesService {
-  async openPosition(uid: string, input: OpenPositionInput): Promise<OpenPositionResult> {
+  async openPosition(_uid: string, input: OpenPositionInput): Promise<OpenPositionResult> {
     const { symbol, side, leverage, marginUsd } = input;
 
     if (leverage < MIN_LEVERAGE || leverage > MAX_LEVERAGE) {
       return { success: false, error: `Leverage must be between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x` };
     }
-    if (!marginUsd || marginUsd <= 0) {
+    if (!Number.isFinite(marginUsd) || marginUsd <= 0) {
       return { success: false, error: 'Margin must be greater than 0' };
     }
 
     try {
-      const balance = await paperAccountService.getBalance(uid);
-      if (marginUsd > balance) {
-        return { success: false, error: 'Insufficient paper balance for this margin' };
+      const headers = await authHeaders();
+      if (!headers) return { success: false, error: OPEN_ERRORS.unauthorized };
+      const res = await fetch('/api/paper/futures/open', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ symbol: symbol.toUpperCase(), side, leverage, marginUsd }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok || typeof data.positionId !== 'string') {
+        const reason = String(data?.reason ?? '');
+        return { success: false, error: OPEN_ERRORS[reason] ?? 'Failed to open position' };
       }
-
-      const entryPrice = (await marketService.getCurrentPrice(symbol)).price;
-      if (!entryPrice || entryPrice <= 0) {
-        return { success: false, error: 'Could not fetch entry price' };
-      }
-
-      const { quantity, liquidationPrice } = buildPosition(side, entryPrice, leverage, marginUsd);
-
-      // Lock margin first; if this throws (overdraft), no position is created.
-      await paperAccountService.adjustBalance(uid, -marginUsd);
-
-      const { data, error } = await supabase
-        .from('futures_positions')
-        .insert({
-          user_id: uid,
-          symbol: symbol.toUpperCase(),
-          side,
-          leverage,
-          entry_price: entryPrice,
-          quantity,
-          margin_usd: marginUsd,
-          margin_mode: 'isolated',
-          liquidation_price: liquidationPrice,
-          status: 'open',
-        })
-        .select('id')
-        .single();
-      if (error || !data) {
-        // The margin was already debited — give it back so a failed open never
-        // silently loses paper cash.
-        const reason = error?.message || 'Failed to open position';
-        try {
-          await paperAccountService.adjustBalance(uid, marginUsd);
-        } catch (refundErr) {
-          console.error('Margin refund after failed open also failed:', refundErr);
-          return { success: false, error: `${reason}. Your margin could not be returned automatically — please contact support.` };
-        }
-        return { success: false, error: `${reason}. Your margin was returned.` };
-      }
-      return { success: true, positionId: data.id };
+      return { success: true, positionId: data.positionId };
     } catch (error: any) {
       console.error('Error opening futures position:', error);
-      return { success: false, error: error?.message || 'Failed to open position' };
+      return { success: false, error: 'Failed to open position' };
     }
   }
 
-  async closePosition(uid: string, positionId: string): Promise<{ success: boolean; realizedPnl?: number; error?: string }> {
+  async closePosition(_uid: string, positionId: string): Promise<{ success: boolean; realizedPnl?: number; error?: string }> {
     try {
-      const { data: row } = await supabase
-        .from('futures_positions')
-        .select('*')
-        .eq('id', positionId)
-        .maybeSingle();
-      if (!row) return { success: false, error: 'Position not found' };
-
-      const pos = mapPosition(row);
-      if (pos.userId !== uid) return { success: false, error: 'Unauthorized' };
-      if (pos.status !== 'open') return { success: false, error: `Position already ${pos.status}` };
-
-      const markPrice = (await marketService.getCurrentPrice(pos.symbol)).price;
-      if (!markPrice || markPrice <= 0) return { success: false, error: 'Could not fetch mark price' };
-      const realizedPnl = computePnl(pos.side, pos.entryPrice, markPrice, pos.quantity);
-
-      // Close FIRST, conditional on the position still being open, and only
-      // credit if this call made the transition — so a double click, or the
-      // engine liquidating it at the same moment, can never pay out twice.
-      const { data: closed, error: closeErr } = await supabase
-        .from('futures_positions')
-        .update({
-          status: 'closed',
-          close_price: markPrice,
-          realized_pnl: realizedPnl,
-          closed_at: new Date().toISOString(),
-        })
-        .eq('id', positionId)
-        .eq('status', 'open')
-        .select('id');
-      if (closeErr) throw new Error(closeErr.message);
-      if (!closed || closed.length !== 1) return { success: false, error: 'Position is no longer open' };
-
-      const credit = Math.max(0, pos.marginUsd + realizedPnl);
-      try {
-        await paperAccountService.adjustBalance(uid, credit);
-      } catch (creditErr) {
-        // Re-open so the user can retry instead of losing the payout.
-        await supabase
-          .from('futures_positions')
-          .update({ status: 'open', close_price: null, realized_pnl: null, closed_at: null })
-          .eq('id', positionId)
-          .eq('status', 'closed');
-        throw creditErr;
+      const headers = await authHeaders();
+      if (!headers) return { success: false, error: CLOSE_ERRORS.unauthorized };
+      const res = await fetch('/api/paper/futures/close', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ positionId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        const reason = String(data?.reason ?? '');
+        return { success: false, error: CLOSE_ERRORS[reason] ?? 'Failed to close position' };
       }
-
-      return { success: true, realizedPnl };
+      const realizedPnl = Number(data.realizedPnl);
+      return { success: true, realizedPnl: Number.isFinite(realizedPnl) ? realizedPnl : 0 };
     } catch (error: any) {
       console.error('Error closing futures position:', error);
-      return { success: false, error: error?.message || 'Failed to close position' };
+      return { success: false, error: 'Failed to close position' };
     }
   }
 

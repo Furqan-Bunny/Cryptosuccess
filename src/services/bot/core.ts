@@ -204,7 +204,7 @@ async function handleSignal(msg: IncomingMessage, arg: string, deps: BotDeps, se
     await reportFailure(deps, 'bot.quota', e);
     return send(errorMessage());
   }
-  if (!gate.allowed) return send(limitReachedMessage(`${deps.baseUrl}/pricing`));
+  if (!gate.allowed) return send(limitReachedMessage(`${deps.baseUrl}/pricing`, gate.linked));
 
   // Perceived latency: acknowledge before the (up-to-tens-of-seconds) generation.
   try { await send(`🧠 Reading ${symbol} across timeframes + latest news… one moment.`); } catch {}
@@ -229,20 +229,20 @@ async function handleSignal(msg: IncomingMessage, arg: string, deps: BotDeps, se
   return send(formatSignal({
     symbol,
     analysis: result.analysis,
-    price: recorded?.price ?? result.price,
+    price: recorded.recorded ? recorded.price : result.price,
     verifyUrl: `${deps.baseUrl}/verify`,
     remaining: gate.remaining,
-    recordedSignalId: recorded?.id ?? null,
+    recordedSignalId: recorded.recorded ? recorded.id : null,
+    notRecordedReason: recorded.recorded ? null : recorded.reason,
     riskLevel: prefs.riskLevel,
   }));
 }
 
-/** Refund a consumed credit; true when a refund was actually issued. */
+/** Refund a consumed credit; true only when the store confirms a credit was returned. */
 export async function refundCredit(store: BotStore, chatId: string, gate: QuotaGate): Promise<boolean> {
   if (gate.remaining === -1) return false; // unlimited — nothing was consumed
   try {
-    await store.refundSignal(chatId);
-    return true;
+    return await store.refundSignal(chatId);
   } catch (e) {
     console.error('signal refund failed:', e);
     return false;

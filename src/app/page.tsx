@@ -174,7 +174,7 @@ export default function HomePage() {
             <StepCard
               number="2"
               title="The server scores it after 24h"
-              description="Once a signal is 24 hours old, a scheduled server job checks the market price and records the outcome: target hit, stop hit, or expired in profit or loss."
+              description="Once a signal is 24 hours old, a scheduled server job checks the market price once and records where it stands: past the target, past the stop, or in between in profit or loss. Moves before that check are not counted, so a stop touched earlier is not scored as a loss."
             />
             <StepCard
               number="3"
@@ -309,7 +309,9 @@ export default function HomePage() {
                 of {technical.trades.toLocaleString('en-US')} backtested trades on {technical.coins}{' '}
                 were wins: the {technical.targetPct}% target was hit before the {technical.stopPct}%
                 stop, or the trade was in profit after {technical.horizonHours} hours
-                (walk-forward, 1h candles).
+                (walk-forward, 1h candles). The live track record is scored differently, on a
+                single price check 24 hours after each call, so the two numbers are not directly
+                comparable.
               </p>
             </div>
             <div className="card p-6">

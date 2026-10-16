@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { TRACK_RECORD_SCOPE } from '@/lib/legal-copy';
 
 export const metadata: Metadata = {
   title: 'Privacy Policy - CryptoSuccess',
@@ -83,8 +84,8 @@ export default function PrivacyPage() {
           <section className="mb-8">
             <h2 className="text-2xl font-semibold text-white mb-4">3. The Public Track Record</h2>
             <p className="text-text-secondary mb-4">
-              Every signal is scored by our server once it is at least 24 hours old. Each day the
-              finalized results are hashed into a Merkle tree and the root of that tree is written
+              {TRACK_RECORD_SCOPE} Our server scores each recorded signal once it is at least 24
+              hours old. Each day the finalized results are hashed into a Merkle tree and the root of that tree is written
               to a public blockchain (currently the Base Sepolia test network).
             </p>
             <ul className="list-disc pl-6 text-text-secondary space-y-2">
@@ -99,8 +100,12 @@ export default function PrivacyPage() {
                 email or Telegram details.
               </li>
               <li>
-                A blockchain anchor cannot be removed. If you delete your account we delete your
-                personal data, but the on-chain root (which contains no personal data) remains.
+                Scored signals stay in the track record after you delete your account, wins and
+                losses alike, so deleting accounts can never be used to hide losing calls. We
+                delete your personal data and unlink those signals from you: they keep only the
+                random user ID they were recorded with, which then no longer points to any
+                account. A blockchain anchor cannot be removed, but the on-chain root contains no
+                personal data.
               </li>
             </ul>
           </section>
@@ -190,7 +195,8 @@ export default function PrivacyPage() {
               We keep your data while your account is active. When you ask us to delete your
               account we delete your personal data, except records we must keep for legal or
               accounting reasons (for example payment records), which are kept only as long as the
-              law requires. On-chain anchors cannot be deleted, as explained in section 3.
+              law requires. Scored signals stay in the public track record without any link to
+              you, and on-chain anchors cannot be deleted, as explained in section 3.
             </p>
           </section>
 

@@ -86,8 +86,10 @@ export async function POST(request: NextRequest) {
     try {
       event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
     } catch (err) {
-      // Expected for forged / misrouted calls: log as a warning, no alert.
-      await reportError('stripe.webhook', err, { route: ROUTE, level: 'warn', alert: false, stage: 'signature' });
+      // Expected for forged / misrouted calls. Unauthenticated, so it is NOT
+      // persisted to error_events (anyone could flood the table): a short console
+      // line only, with no request data echoed.
+      console.warn(`${ROUTE}: rejected a request with an invalid Stripe signature`);
       return NextResponse.json(
         { error: 'Invalid signature' },
         { status: 400 }

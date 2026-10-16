@@ -9,12 +9,11 @@ import { FaCheck, FaArrowLeft } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { isProSubscription } from '@/lib/signal-allowance';
 import { isCryptoPlan } from '@/lib/subscription-rules';
+import { CRYPTO_REFUND_TERMS, REFUND_DAYS, TRACK_RECORD_SCOPE } from '@/lib/legal-copy';
+import { saveCryptoBaseline } from '@/lib/crypto-checkout-baseline';
 
 type Interval = 'monthly' | 'yearly';
 
-// Single refund window, mirrored in the Terms of Service (section 6). Change both
-// together.
-const REFUND_DAYS = 14;
 
 // Stripe plan id for the selected interval. The checkout service maps both to the
 // Pro price; the interval is passed alongside so yearly checkouts stay yearly.
@@ -74,6 +73,9 @@ export default function PricingPage() {
     setIsLoading(true);
     try {
       const { cryptoPayService } = await import('@/services/crypto-pay.service');
+      // Lets the success page tell this payment apart from Pro that is already
+      // running (display only; Pro is granted by the confirmed-payment webhook).
+      saveCryptoBaseline(isPro ? profile?.subscription?.currentPeriodEnd : null);
       await cryptoPayService.startCheckout(billingInterval);
     } catch (error) {
       console.error('Crypto checkout error:', error);
@@ -197,7 +199,7 @@ export default function PricingPage() {
           </PlanCard>
 
           {/* Pro Plan */}
-          <PlanCard plan={SUBSCRIPTION_PLANS.pro} billingInterval={billingInterval} popular>
+          <PlanCard plan={SUBSCRIPTION_PLANS.pro} billingInterval={billingInterval} highlighted>
             {isPro ? (
               <>
                 <button
@@ -284,7 +286,7 @@ export default function PricingPage() {
             />
             <FAQItem
               question="Do you offer refunds?"
-              answer={`Yes. If Pro is not right for you, email support within ${REFUND_DAYS} days of your first payment for a full refund. Renewals are not refunded, but you can cancel before the next renewal at any time. Crypto refunds are paid back in crypto to an address you provide, for the original USD amount.`}
+              answer={`Yes. If Pro is not right for you, email support within ${REFUND_DAYS} days of your first payment for a full refund. Renewals are not refunded, but you can cancel before the next renewal at any time. ${CRYPTO_REFUND_TERMS}`}
             />
             <FAQItem
               question="Is the trading real money?"
@@ -292,7 +294,7 @@ export default function PricingPage() {
             />
             <FAQItem
               question="Will Pro make me money?"
-              answer="We cannot promise that, and nobody honestly can. Pro gives you more signals and more tools, not better odds. Every signal is scored and kept in our public, verifiable track record, wins and losses alike, so you can judge it for yourself."
+              answer={`We cannot promise that, and nobody honestly can. Pro gives you more signals and more tools, not better odds. ${TRACK_RECORD_SCOPE} Wins and losses are kept alike, so you can judge it for yourself.`}
             />
           </div>
 
@@ -311,13 +313,13 @@ export default function PricingPage() {
 function PlanCard({
   plan,
   billingInterval,
-  popular = false,
+  highlighted = false,
   comingSoon = false,
   children,
 }: {
   plan: SubscriptionPlan;
   billingInterval: Interval;
-  popular?: boolean;
+  highlighted?: boolean;
   comingSoon?: boolean;
   children: React.ReactNode;
 }) {
@@ -325,17 +327,10 @@ function PlanCard({
 
   return (
     <div
-      className={`card p-8 relative overflow-visible ${popular ? 'border-primary md:scale-105' : ''} ${
+      className={`card p-8 relative overflow-visible ${highlighted ? 'border-primary md:scale-105' : ''} ${
         comingSoon ? 'opacity-70' : ''
       }`}
     >
-      {popular && (
-        <div className="absolute -top-4 left-1/2 -translate-x-1/2">
-          <span className="bg-primary text-white text-sm font-semibold px-4 py-1.5 rounded-full whitespace-nowrap">
-            Most Popular
-          </span>
-        </div>
-      )}
       {comingSoon && (
         <div className="absolute -top-4 left-1/2 -translate-x-1/2">
           <span className="bg-gray-700 text-white text-sm font-semibold px-4 py-1.5 rounded-full whitespace-nowrap">

@@ -10,12 +10,15 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { stripeService } from '@/services/stripe.service';
 import TelegramLinkCard from '@/components/settings/TelegramLinkCard';
+import { isCryptoPlan } from '@/lib/subscription-rules';
 
 export default function SettingsPage() {
   const { user, profile, refreshProfile } = useAuth();
 
   const isPro = isProSubscription(profile?.subscription);
   const customerId = profile?.subscription?.customerId;
+  // One-off crypto Pro: no renewal and no Stripe billing account to manage.
+  const isCryptoPro = isPro && isCryptoPlan(profile?.subscription?.planId);
   const [billingLoading, setBillingLoading] = useState(false);
 
   // Optimistic notification toggle: `pendingNotif` overrides the stored value
@@ -142,16 +145,28 @@ export default function SettingsPage() {
             {isPro && profile?.subscription?.currentPeriodEnd && (
               <div className="flex items-center justify-between py-3 border-b border-gray-800">
                 <div>
-                  <p className="text-sm text-text-secondary">Next Billing Date</p>
+                  <p className="text-sm text-text-secondary">
+                    {isCryptoPro ? 'Pro access ends' : 'Current period ends'}
+                  </p>
                   <p className="text-white">
                     {formatDate(profile.subscription.currentPeriodEnd)}
+                  </p>
+                  <p className="text-xs text-text-secondary mt-0.5">
+                    {isCryptoPro
+                      ? 'Crypto payments do not renew. Extend with another crypto payment before this date to keep Pro.'
+                      : 'Card subscriptions renew on this date unless cancelled. Manage or cancel under Manage Billing.'}
                   </p>
                 </div>
               </div>
             )}
 
             <div className="pt-2">
-              {isPro ? (
+              {isCryptoPro ? (
+                <Link href="/pricing" className="btn-secondary px-4 py-2 text-sm inline-flex items-center space-x-2">
+                  <FaCrown />
+                  <span>Extend with crypto</span>
+                </Link>
+              ) : isPro ? (
                 <button
                   onClick={handleManageBilling}
                   disabled={billingLoading}

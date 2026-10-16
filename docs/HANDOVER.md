@@ -173,6 +173,22 @@ real processors listed). Backtest numbers quoted publicly come only from
   `src/lib/server/cron-monitor.ts`: scrubbed error log (`error_events`), every cron
   run recorded (`cron_runs`), optional Telegram admin alerts, `GET /api/health`
   and `GET /api/ops/status` (see §4.4).
+- **Migration `0012`** (run it BEFORE deploying the matching code):
+  - Free-tier quota columns on `profiles` (`signals_used_today`,
+    `last_reset_date`, `total_signals_viewed`, plus `email` / `created_at`) are
+    server-managed: the guard trigger rejects client changes and clients may only
+    UPDATE `display_name, photo_url, notifications, timezone, watchlist,
+    last_login, portfolio_summary`. A new client-editable profile column must be
+    added to that GRANT.
+  - Paper cash: `adjust_paper_balance` is no longer callable by clients. Staking
+    goes through `stake_position` / `unstake_position` (APY read from
+    `staking_rates`), futures through `POST /api/paper/futures/open|close`
+    (server-priced, `open_futures_position` / `close_futures_position`, service
+    role only). Staking / futures rows are read-only to clients;
+    `reset_paper_balance` also closes open stakes and futures.
+  - Account deletion keeps scored signals (`user_id` set to NULL) so losing calls
+    can't disappear and inclusion proofs keep working; anchored leaves can't be
+    deleted. `/api/anchor/proof` refuses to build a proof from an incomplete day.
 
 ### 3.9 Quality baseline (keep it green)
 `npm run type-check` clean · `npm test` green (300+ tests) · `npm run build`

@@ -14,7 +14,7 @@ import type { AnalystTake } from '@/services/analyst.service';
 import type { SignalOutcome } from '@/lib/signal-outcome';
 import { getCoinName } from '@/lib/coins';
 import { MAX_COINS, riskBudget, riskBudgetLabel } from './prefs';
-import type { AccountStatus, ChatPrefs, RiskLevel } from './types';
+import type { AccountStatus, ChatPrefs, NotRecordedReason, RiskLevel } from './types';
 
 /** Words we must never emit — the honest-coach promise. */
 export const BANNED_PHRASES = ['guaranteed', 'guarantee', '100x', 'to the moon', 'risk-free', 'can\'t lose', 'cannot lose', 'sure thing'];
@@ -81,6 +81,20 @@ export function sizingLines(riskLevel: RiskLevel | null | undefined, stopDistPct
   return lines;
 }
 
+/** Why a read isn't in the track record. Only an unlinked chat is told to /link. */
+export function notRecordedLine(reason: NotRecordedReason | null | undefined): string {
+  switch (reason) {
+    case 'levels':
+      return "This read is NOT recorded in our track record: its target and stop-loss couldn't be matched to the live price, so it can't be scored fairly.";
+    case 'price':
+      return "This read is NOT recorded in our track record: we couldn't get a live price to record it against.";
+    case 'error':
+      return 'This read is NOT recorded in our track record because saving it failed on our side.';
+    default:
+      return 'This read is NOT recorded in our track record. Link your account with /link so your calls are recorded and verifiable.';
+  }
+}
+
 /**
  * Format one coin's analyst take as an honest-coach message.
  * Leads with the short-term read (what most users ask for) but always surfaces
@@ -96,10 +110,12 @@ export function formatSignal(params: {
   // recorded (unlinked chat / unparseable levels). Only recorded calls are
   // scored and anchored on-chain, so the message must never claim otherwise.
   recordedSignalId?: string | null;
+  /** Why the call wasn't recorded (only the unlinked case is told to /link). */
+  notRecordedReason?: NotRecordedReason | null;
   /** The chat's risk setting; adapts the sizing line (capped at 2%). */
   riskLevel?: RiskLevel | null;
 }): string {
-  const { symbol, analysis, price, verifyUrl, remaining, recordedSignalId, riskLevel } = params;
+  const { symbol, analysis, price, verifyUrl, remaining, recordedSignalId, notRecordedReason, riskLevel } = params;
   const name = getCoinName(symbol);
   const st = analysis.shortTerm;
   const emoji = VERDICT_EMOJI[st.verdict] ?? '⚪';
@@ -145,7 +161,7 @@ export function formatSignal(params: {
   if (recordedSignalId) {
     lines.push(`🔗 This call is recorded in our track record. After it's scored (24h) it is anchored on-chain, so we can't hide it if it loses → ${verifyUrl}?signalId=${recordedSignalId}`);
   } else {
-    lines.push(`ℹ️ This read is NOT recorded in our track record. Link your account with /link so your calls are recorded and verifiable. Our verified track record → ${verifyUrl}`);
+    lines.push(`ℹ️ ${notRecordedLine(notRecordedReason)} Our verified track record → ${verifyUrl}`);
   }
 
   if (remaining != null && remaining >= 0) {
@@ -212,10 +228,11 @@ export function verifyMessage(verifyUrl: string): string {
 
 export function subscribeMessage(pricingUrl: string): string {
   return [
-    '⭐ CryptoSuccess Pro — unlimited signals + priority coins.',
+    '⭐ CryptoSuccess Pro — unlimited signals on the website and here, plus optional daily alerts.',
     `Upgrade here: ${pricingUrl}`,
     '',
-    'Free tier stays 5 signals/day. No "guaranteed returns" — just more of the honest coaching, whenever you want it.',
+    'After upgrading, link this chat with /link so Pro applies here too. Until then this chat keeps its own 5 free signals a day.',
+    'Pro gives you more reads, not better odds. No promises of profit — just more of the honest coaching, whenever you want it.',
   ].join('\n');
 }
 
@@ -240,12 +257,16 @@ export function linkFailedMessage(reason: string): string {
   return `❌ Couldn't link — ${why}. Generate a fresh code on the website and try /link <code> again.`;
 }
 
-export function limitReachedMessage(pricingUrl: string): string {
-  return [
+export function limitReachedMessage(pricingUrl: string, linked = false): string {
+  const lines = [
     "You've used your 5 free signals for today — resets at 00:00 UTC.",
     'Honest coaching is worth pacing anyway: overtrading is how most people lose.',
     `Want unlimited? Go Pro: ${pricingUrl}`,
-  ].join('\n');
+  ];
+  // An unlinked chat has its own free allowance: a Pro plan bought on the website
+  // only applies here once the chat is linked.
+  if (!linked) lines.push('Already Pro on the website? Link this chat with /link so your plan applies here.');
+  return lines.join('\n');
 }
 
 export function unsupportedCoinMessage(symbol: string): string {
@@ -438,12 +459,17 @@ export interface FollowUpSignal {
   createdAt: string;
 }
 
+// Scoring checks ONE price, taken 24h+ after the call (see deriveOutcome), not
+// the path in between, so every label describes that single check.
 const OUTCOME_LABEL: Record<SignalOutcome, string> = {
-  hit_target: '✅ WIN — price reached the target',
-  hit_stop: '❌ LOSS — price hit the stop-loss',
-  expired_profit: '✅ Small WIN — the 24h window closed in profit (target not reached)',
-  expired_loss: '❌ LOSS — the 24h window closed at a loss (stop not hit)',
+  hit_target: '✅ WIN — at the 24h check the price was past the target',
+  hit_stop: '❌ LOSS — at the 24h check the price was past the stop-loss',
+  expired_profit: '✅ Small WIN — at the 24h check the price was in profit, short of the target',
+  expired_loss: '❌ LOSS — at the 24h check the price was at a loss, short of the stop-loss',
 };
+
+const SCORING_NOTE =
+  'How it was scored: one price check 24h after the call. Moves in between are not counted, so if your stop-loss was touched earlier, your real result may differ.';
 
 function signed(n: number): string {
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
@@ -474,6 +500,7 @@ export function formatFollowUp(sig: FollowUpSignal, verifyUrl: string): string {
       lines.push(`Price after 24h: $${formatPrice(sig.priceAt24h)} (${signed(move)} from entry).`);
     }
     lines.push(`Result: ${OUTCOME_LABEL[sig.outcome]} · ${signed(sig.profitLossPercent)} on the call.`);
+    lines.push(SCORING_NOTE);
     lines.push('');
     if (sig.outcome === 'hit_stop' || sig.outcome === 'expired_loss') {
       lines.push('We got this one wrong, and we\'re telling you straight. Losses are part of trading — that\'s exactly why every call comes with a stop-loss and a 1–2% max risk per trade.');

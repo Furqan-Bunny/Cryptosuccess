@@ -3,7 +3,7 @@
 // a STAY-OUT path on low conviction, the on-chain /verify hook, and NO banned
 // hype ("guaranteed", "100x", …). Pure formatter — no network/DB.
 import {
-  formatSignal, welcomeMessage, helpMessage, verifyMessage,
+  formatSignal, welcomeMessage, helpMessage, verifyMessage, subscribeMessage, limitReachedMessage,
   parseFirstNumber, parseRangeMid, BANNED_PHRASES,
 } from '@/services/bot/format';
 import { splitForTelegram, secretsMatch } from '@/lib/telegram/api';
@@ -84,12 +84,39 @@ describe('formatSignal — honest-coach guardrails', () => {
 
 describe('static messages', () => {
   it('welcome/help/verify carry the honest positioning and no hype', () => {
-    for (const msg of [welcomeMessage(VERIFY), helpMessage(), verifyMessage(VERIFY)]) {
+    const PRICING = 'https://app.example.com/pricing';
+    for (const msg of [
+      welcomeMessage(VERIFY), helpMessage(), verifyMessage(VERIFY),
+      subscribeMessage(PRICING), limitReachedMessage(PRICING), limitReachedMessage(PRICING, true),
+    ]) {
       for (const banned of BANNED_PHRASES) {
         expect(msg.toLowerCase()).not.toContain(banned.toLowerCase());
       }
     }
     expect(welcomeMessage(VERIFY)).toContain(VERIFY);
+  });
+
+  it('subscribe advertises only real Pro features and the /link step', () => {
+    const msg = subscribeMessage('https://app.example.com/pricing');
+    expect(msg.toLowerCase()).not.toContain('priority');
+    expect(msg).toContain('/link');
+  });
+
+  it('limit message tells only unlinked chats to /link', () => {
+    expect(limitReachedMessage('https://x/pricing')).toContain('/link');
+    expect(limitReachedMessage('https://x/pricing', true)).not.toContain('/link');
+  });
+});
+
+describe('formatSignal: not-recorded reasons', () => {
+  it('asks only unlinked chats to /link', () => {
+    const unlinked = formatSignal({ symbol: 'ETH', analysis: take(), verifyUrl: VERIFY, notRecordedReason: 'unlinked' });
+    expect(unlinked).toContain('/link');
+    for (const reason of ['levels', 'price', 'error'] as const) {
+      const msg = formatSignal({ symbol: 'ETH', analysis: take(), verifyUrl: VERIFY, notRecordedReason: reason });
+      expect(msg).toContain('NOT recorded');
+      expect(msg).not.toContain('/link');
+    }
   });
 });
 
@@ -166,6 +193,12 @@ describe('buildSignalRecord', () => {
   it('marks the reasoning with the Telegram prefix the follow-up cron selects on', () => {
     expect(buildSignalRecord(take(), 2010)?.reasoning.startsWith(TELEGRAM_READ_PREFIX)).toBe(true);
     expect(TELEGRAM_READ_PREFIX).toBe('Telegram analyst read');
+  });
+
+  it('records a low-conviction BUY/SELL as a stay-out HOLD, matching what the user is told', () => {
+    const t = take({ shortTerm: { ...take().shortTerm, conviction: 'low' } });
+    expect(buildSignalRecord(t, 2010)).toMatchObject({ action: 'HOLD', entryPrice: 2010, targetPrice: 2010, stopLoss: 2010 });
+    expect(formatSignal({ symbol: 'ETH', analysis: t, verifyUrl: VERIFY }).toLowerCase()).toContain('stay-out');
   });
 
   it('records HOLD as a neutral flat call', () => {

@@ -9,7 +9,7 @@ import { fetchSpotPrice } from '@/lib/server/binance-server';
 import { buildSignalRecord } from '@/services/bot/record';
 import { prefsFromRow } from '@/services/bot/prefs';
 import { isEffectivePro } from '@/lib/subscription-rules';
-import type { BotStore, PrefsPatch, QuotaGate, RecordedSignal } from '@/services/bot/types';
+import type { BotStore, PrefsPatch, QuotaGate, RecordOutcome } from '@/services/bot/types';
 
 /** Telegram chat ids are int64; anything else is rejected before it reaches SQL. */
 export function toTelegramId(chatId: string): number {
@@ -48,8 +48,10 @@ export function createTelegramStore(db: SupabaseClient): BotStore {
     },
 
     async refundSignal(chatId) {
-      const { error } = await db.rpc('refund_telegram_signal', { p_telegram_id: toTelegramId(chatId) });
+      const { data, error } = await db.rpc('refund_telegram_signal', { p_telegram_id: toTelegramId(chatId) });
       if (error) throw error;
+      // { refunded: false } is a normal answer (nothing to give back today).
+      return !!data && typeof data === 'object' && data.refunded === true;
     },
 
     async getAccountStatus(chatId) {
@@ -100,20 +102,20 @@ export function createTelegramStore(db: SupabaseClient): BotStore {
     // anchored like a web signal. `signals.user_id` is required, so unlinked
     // chats can't be recorded — the message then says so. Best-effort: never
     // blocks the reply.
-    async recordSignal(chatId: string, symbol: string, analysis: AnalystTake): Promise<RecordedSignal | null> {
+    async recordSignal(chatId: string, symbol: string, analysis: AnalystTake): Promise<RecordOutcome> {
       try {
         const { data: tu } = await db
           .from('telegram_users')
           .select('user_id')
           .eq('telegram_id', toTelegramId(chatId))
           .maybeSingle();
-        if (!tu?.user_id) return null;
+        if (!tu?.user_id) return { recorded: false, reason: 'unlinked' };
 
         const price = await fetchSpotPrice(symbol);
-        if (price == null) return null;
+        if (price == null) return { recorded: false, reason: 'price' };
 
         const rec = buildSignalRecord(analysis, price);
-        if (!rec) return null;
+        if (!rec) return { recorded: false, reason: 'levels' };
 
         const { data, error } = await db
           .from('signals')
@@ -131,10 +133,10 @@ export function createTelegramStore(db: SupabaseClient): BotStore {
           .select('id')
           .single();
         if (error) throw error;
-        return { id: data.id as string, price };
+        return { recorded: true, id: data.id as string, price };
       } catch (e) {
         console.warn('recording telegram signal failed (reply still sent):', e);
-        return null;
+        return { recorded: false, reason: 'error' };
       }
     },
   };
