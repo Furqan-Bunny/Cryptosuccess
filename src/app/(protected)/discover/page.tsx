@@ -9,6 +9,7 @@ import SimDisclaimer from '@/components/shared/SimDisclaimer';
 import { supabase } from '@/lib/supabase/client';
 import { isSupportedCoin } from '@/lib/coins';
 import { marketService } from '@/services/market.service';
+import { parseDate } from '@/lib/dates';
 import { FaCompass, FaExclamationTriangle } from 'react-icons/fa';
 
 interface Listing {
@@ -16,7 +17,7 @@ interface Listing {
   symbol: string;
   pair: string;
   quoteVolume: number;
-  detectedAt?: any;
+  detectedAt?: string;
 }
 
 export default function DiscoverPage() {
@@ -27,24 +28,20 @@ export default function DiscoverPage() {
   );
 }
 
-function tsToDate(value: any): Date | null {
-  if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate();
-  return null;
-}
-
 function DiscoverPageInner() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('new_listings')
           .select('*')
           .order('detected_at', { ascending: false })
           .limit(50);
+        if (error) throw new Error(error.message);
         setListings(
           (data ?? []).map(r => ({
             id: r.id,
@@ -56,6 +53,7 @@ function DiscoverPageInner() {
         );
       } catch (e) {
         console.error('Error loading new listings:', e);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
@@ -87,6 +85,10 @@ function DiscoverPageInner() {
 
         {loading ? (
           <p className="text-text-secondary">Loading…</p>
+        ) : loadError ? (
+          <div className="card p-12 text-center">
+            <p className="text-text-secondary">Couldn&apos;t load new listings right now. Please refresh to try again.</p>
+          </div>
         ) : listings.length === 0 ? (
           <div className="card p-12 text-center">
             <p className="text-text-secondary">
@@ -96,7 +98,7 @@ function DiscoverPageInner() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {listings.map(l => {
-              const date = tsToDate(l.detectedAt);
+              const date = parseDate(l.detectedAt);
               const supported = isSupportedCoin(l.symbol);
               return (
                 <div key={l.id} className="card p-4">

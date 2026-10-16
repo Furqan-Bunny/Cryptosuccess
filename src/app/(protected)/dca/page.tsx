@@ -8,6 +8,7 @@ import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import SimDisclaimer from '@/components/shared/SimDisclaimer';
 import { dcaService, DcaSchedule, DcaCadence } from '@/services/dca.service';
 import { marketService } from '@/services/market.service';
+import { parseDate } from '@/lib/dates';
 import { COIN_SYMBOLS } from '@/lib/coins';
 import { FaSyncAlt, FaPlay, FaPause, FaTrash, FaChartLine } from 'react-icons/fa';
 import toast from 'react-hot-toast';
@@ -18,14 +19,6 @@ export default function DcaPage() {
       <DcaPageInner />
     </ProtectedRoute>
   );
-}
-
-function tsToDate(value: any): Date | null {
-  if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate();
-  if (value instanceof Date) return value;
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? null : d;
 }
 
 function DcaPageInner() {
@@ -164,7 +157,7 @@ function DcaPageInner() {
             ) : (
               <div className="space-y-3">
                 {schedules.map(s => {
-                  const next = tsToDate(s.nextRunAt);
+                  const next = parseDate(s.nextRunAt);
                   return (
                     <div key={s.id} className="flex items-center justify-between p-4 bg-gray-800/50 rounded-lg">
                       <div>

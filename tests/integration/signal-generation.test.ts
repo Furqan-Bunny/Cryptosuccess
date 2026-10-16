@@ -1,150 +1,149 @@
 import { TechnicalIndicators } from '../../src/services/ai/indicators';
+import { marketService, CandleData } from '../../src/services/market.service';
+import { adjustModelConfidence } from '../../src/services/ai-signals.service';
 
-// Test the signal generation data pipeline (without TensorFlow)
-describe('Signal Generation Pipeline', () => {
-  function generateCandles(count: number) {
-    const candles = [];
-    let price = 2000; // ETH-like price
-    for (let i = 0; i < count; i++) {
-      const change = (Math.random() - 0.5) * 40;
-      price = Math.max(100, price + change);
-      candles.push({
-        open: price - 5,
-        high: price + 10,
-        low: price - 10,
-        close: price,
-        volume: 50000 + Math.random() * 100000,
-      });
-    }
-    return candles;
+// Signal-generation pipeline tests against the REAL code paths (no TensorFlow:
+// the model is loaded lazily and never touched here). Candles come from a
+// seeded generator so results are reproducible.
+
+function seededRandom(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    // mulberry32
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateCandles(count: number, opts: { seed?: number; drift?: number } = {}): CandleData[] {
+  const rand = seededRandom(opts.seed ?? 42);
+  const drift = opts.drift ?? 0;
+  const candles: CandleData[] = [];
+  let price = 2000; // ETH-like price
+  for (let i = 0; i < count; i++) {
+    price = Math.max(100, price + drift + (rand() - 0.5) * 40);
+    candles.push({
+      time: 1_700_000_000_000 + i * 3_600_000,
+      open: price - 5,
+      high: price + 10,
+      low: price - 10,
+      close: price,
+      volume: 50000 + rand() * 100000,
+    });
   }
+  return candles;
+}
 
-  describe('prepareNormalizedFeatures for LSTM', () => {
-    it('produces correct shape for training window', () => {
-      const candles = generateCandles(100);
-      const LOOKBACK = 50;
-      const TIMESTEPS = 24;
+describe('prepareNormalizedFeatures for LSTM', () => {
+  it('produces 12 features per step and [24, 12] windows', () => {
+    const candles = generateCandles(100);
+    const LOOKBACK = 50;
+    const TIMESTEPS = 24;
 
-      const allFeatures: number[][] = [];
-      for (let i = LOOKBACK; i < candles.length; i++) {
-        const slice = candles.slice(Math.max(0, i - LOOKBACK), i + 1);
-        const features = TechnicalIndicators.prepareNormalizedFeatures(slice);
-        allFeatures.push(features);
-      }
+    const allFeatures: number[][] = [];
+    for (let i = LOOKBACK; i < candles.length; i++) {
+      allFeatures.push(TechnicalIndicators.prepareNormalizedFeatures(candles.slice(Math.max(0, i - LOOKBACK), i + 1)));
+    }
 
-      // Should produce enough feature vectors
-      expect(allFeatures.length).toBe(candles.length - LOOKBACK);
-
-      // Each feature vector has 12 elements
-      allFeatures.forEach(f => {
-        expect(f).toHaveLength(12);
-      });
-
-      // Can create windows of TIMESTEPS
-      const windows: number[][][] = [];
-      for (let i = TIMESTEPS; i < allFeatures.length; i++) {
-        windows.push(allFeatures.slice(i - TIMESTEPS, i));
-      }
-
-      // Each window is [24, 12]
-      windows.forEach(w => {
-        expect(w).toHaveLength(TIMESTEPS);
-        w.forEach(step => {
-          expect(step).toHaveLength(12);
-        });
-      });
+    expect(allFeatures.length).toBe(candles.length - LOOKBACK);
+    allFeatures.forEach(f => {
+      expect(f).toHaveLength(12);
+      f.forEach(v => expect(Number.isFinite(v)).toBe(true));
     });
+
+    for (let i = TIMESTEPS; i < allFeatures.length; i++) {
+      const w = allFeatures.slice(i - TIMESTEPS, i);
+      expect(w).toHaveLength(TIMESTEPS);
+      w.forEach(step => expect(step).toHaveLength(12));
+    }
+  });
+});
+
+describe('ATR percent (used for labeling thresholds)', () => {
+  it('is positive and finite on a normal series', () => {
+    const c = generateCandles(80);
+    const atrPct = TechnicalIndicators.calculateATRPercent(
+      c.map(x => x.high),
+      c.map(x => x.low),
+      c.map(x => x.close)
+    );
+    expect(atrPct).toBeGreaterThan(0);
+    expect(Number.isFinite(atrPct)).toBe(true);
+  });
+});
+
+describe('adjustModelConfidence (real AI confidence adjuster)', () => {
+  const strongBuy = { adx: 30, rsi: 55, macd: { histogram: 1 }, ema50: 110, ema200: 100, stochastic: { k: 50 } };
+
+  it('never exceeds 85% even for a 100% raw model output', () => {
+    for (const raw of [90, 95, 100, 150]) {
+      expect(adjustModelConfidence(raw, 'BUY', strongBuy)).toBeLessThanOrEqual(85);
+    }
   });
 
-  describe('ATR-based labeling', () => {
-    it('produces valid one-hot labels', () => {
-      const candles = generateCandles(200);
-      const LOOKBACK = 50;
-      const LOOKAHEAD = 24;
-      const labels: number[][] = [];
-
-      for (let i = LOOKBACK; i < candles.length - LOOKAHEAD; i++) {
-        const currentPrice = candles[i].close;
-        const futurePrice = candles[i + LOOKAHEAD].close;
-        const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
-
-        const slice = candles.slice(Math.max(0, i - 50), i + 1);
-        const atrPercent = TechnicalIndicators.calculateATRPercent(
-          slice.map(c => c.high),
-          slice.map(c => c.low),
-          slice.map(c => c.close)
-        );
-        const threshold = Math.max(atrPercent, 1);
-
-        if (priceChange > threshold) {
-          labels.push([1, 0, 0]);
-        } else if (priceChange < -threshold) {
-          labels.push([0, 1, 0]);
-        } else {
-          labels.push([0, 0, 1]);
-        }
-      }
-
-      // All labels are valid one-hot vectors
-      labels.forEach(label => {
-        expect(label).toHaveLength(3);
-        expect(label.reduce((a, b) => a + b, 0)).toBe(1);
-        label.forEach(v => expect([0, 1]).toContain(v));
-      });
-
-      // Should have a mix of labels (not all one class)
-      const buyCount = labels.filter(l => l[0] === 1).length;
-      const sellCount = labels.filter(l => l[1] === 1).length;
-      const holdCount = labels.filter(l => l[2] === 1).length;
-      expect(buyCount + sellCount + holdCount).toBe(labels.length);
-    });
+  it('never drops below the 5% floor', () => {
+    expect(adjustModelConfidence(1, 'SELL', { adx: 0 })).toBeGreaterThanOrEqual(5);
   });
 
-  describe('Signal confidence cap', () => {
-    it('confidence should never exceed 85%', () => {
-      // Simulate the confidence capping logic from ai-signals.service.ts
-      const testConfidences = [90, 95, 100, 50, 85, 85.1, 30];
-      testConfidences.forEach(conf => {
-        const capped = Math.min(conf, 85);
-        expect(capped).toBeLessThanOrEqual(85);
-      });
-    });
-
-    it('ADX penalty reduces confidence when ADX < 20', () => {
-      const baseConfidence = 80;
-      const adx = 10;
-      const adjusted = baseConfidence * (adx / 20);
-      expect(adjusted).toBe(40);
-      expect(adjusted).toBeLessThan(baseConfidence);
-    });
+  it('penalises weak trends (ADX < 20) proportionally', () => {
+    const strong = adjustModelConfidence(80, 'BUY', strongBuy);
+    const weak = adjustModelConfidence(80, 'BUY', { ...strongBuy, adx: 10 });
+    expect(weak).toBeLessThan(strong);
   });
 
-  describe('ATR-based stops and targets', () => {
-    it('BUY: stop below entry, target above entry', () => {
-      const price = 2000;
-      const atr = 50;
-      const stopLoss = price - 2 * atr;
-      const targetPrice = price + 3 * atr;
-      expect(stopLoss).toBeLessThan(price);
-      expect(targetPrice).toBeGreaterThan(price);
-      expect(targetPrice - price).toBeGreaterThan(price - stopLoss); // Reward > Risk
+  it('penalises a signal the indicators disagree with', () => {
+    const agrees = adjustModelConfidence(70, 'BUY', strongBuy);
+    const disagrees = adjustModelConfidence(70, 'BUY', {
+      adx: 30,
+      rsi: 80,
+      macd: { histogram: -1 },
+      ema50: 90,
+      ema200: 100,
+      stochastic: { k: 90 },
     });
+    expect(disagrees).toBeLessThan(agrees);
+  });
+});
 
-    it('SELL: stop above entry, target below entry', () => {
-      const price = 2000;
-      const atr = 50;
-      const stopLoss = price + 2 * atr;
-      const targetPrice = price - 3 * atr;
-      expect(stopLoss).toBeGreaterThan(price);
-      expect(targetPrice).toBeLessThan(price);
-    });
+describe('generateRuleBasedSignal (real technical engine)', () => {
+  it('BUY: stop below entry, target above, 1.5:1 reward:risk', () => {
+    const candles = generateCandles(150, { drift: 3 }); // trending up
+    const s = marketService.generateRuleBasedSignal('ETH', candles);
+    expect(s.action).toBe('BUY');
+    expect(s.stopLoss).toBeLessThan(s.price);
+    expect(s.targetPrice).toBeGreaterThan(s.price);
+    expect((s.targetPrice - s.price) / (s.price - s.stopLoss)).toBeCloseTo(1.5, 6);
+  });
 
-    it('1.5:1 reward/risk ratio', () => {
-      const price = 2000;
-      const atr = 50;
-      const risk = 2 * atr;
-      const reward = 3 * atr;
-      expect(reward / risk).toBe(1.5);
+  it('SELL: stop above entry, target below, 1.5:1 reward:risk', () => {
+    // A choppy, gently declining market: RSI stays mid-range (not oversold, so
+    // no mean-reversion BUY) while EMA20 sits below EMA50.
+    const candles: CandleData[] = Array.from({ length: 145 }, (_, i) => {
+      const close = 2000 - i + 15 * Math.sin(i / 1.5);
+      return { time: i * 3_600_000, open: close + 2, high: close + 10, low: close - 10, close, volume: 80000 };
     });
+    const s = marketService.generateRuleBasedSignal('ETH', candles);
+    expect(s.action).toBe('SELL');
+    expect(s.stopLoss).toBeGreaterThan(s.price);
+    expect(s.targetPrice).toBeLessThan(s.price);
+    expect((s.price - s.targetPrice) / (s.stopLoss - s.price)).toBeCloseTo(1.5, 6);
+  });
+
+  it('caps confidence at 85% and tags the technical engine', () => {
+    for (const drift of [-5, -1, 0, 1, 5]) {
+      const s = marketService.generateRuleBasedSignal('BTC', generateCandles(150, { drift, seed: 7 }));
+      expect(s.confidence).toBeLessThanOrEqual(85);
+      expect(s.engine).toBe('technical');
+      expect(s.symbol).toBe('BTC');
+    }
+  });
+
+  it('uses the supplied live price as the entry when given', () => {
+    const candles = generateCandles(150, { drift: 3 });
+    const s = marketService.generateRuleBasedSignal('ETH', candles, 2500);
+    expect(s.price).toBe(2500);
   });
 });

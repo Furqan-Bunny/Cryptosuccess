@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import { rateLimit, clientIp } from '@/lib/server/rate-limit';
+import { parseBoundedInt } from '@/lib/market-params';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,8 +14,10 @@ export async function GET(request: NextRequest) {
     );
   }
   try {
-    const searchParams = request.nextUrl.searchParams;
-    const limit = searchParams.get('limit') || '1';
+    const limit = parseBoundedInt(request.nextUrl.searchParams.get('limit'), 1, 1, 365);
+    if (limit === null) {
+      return NextResponse.json({ error: 'Invalid limit' }, { status: 400 });
+    }
 
     const response = await axios.get('https://api.alternative.me/fng/', {
       params: { limit, format: 'json' },

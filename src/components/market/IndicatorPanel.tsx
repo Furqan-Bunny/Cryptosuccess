@@ -22,6 +22,12 @@ function toneClass(tone: Tone): string {
   return 'text-yellow-400 bg-yellow-900/20';
 }
 
+// Enough decimals that sub-dollar coins (SHIB, PEPE) don't render as $0.00.
+function priceLabel(v: number): string {
+  const abs = Math.abs(v);
+  return marketService.formatPrice(v, abs >= 1 ? 2 : abs >= 0.01 ? 4 : 8);
+}
+
 function Row({ label, value, badge, tone }: { label: string; value: string; badge: string; tone: Tone }) {
   return (
     <div className="flex items-center justify-between py-2 border-b border-gray-800/60 last:border-0">
@@ -41,7 +47,7 @@ export default function IndicatorPanel({
   indicators: Indicators;
   currentPrice: number;
 }) {
-  const { rsi, macd, bollinger, ema50, ema200, stochastic, atr, adx } = indicators;
+  const { rsi, macd, bollinger, ema50, ema200, stochastic, vwap, atr, adx } = indicators;
 
   // RSI
   const rsiTone: Tone = rsi >= 70 ? 'bearish' : rsi <= 30 ? 'bullish' : 'neutral';
@@ -69,6 +75,13 @@ export default function IndicatorPanel({
   const bbTone: Tone = bbPct >= 80 ? 'bearish' : bbPct <= 20 ? 'bullish' : 'neutral';
   const bbBadge = bbPct >= 80 ? 'Near upper' : bbPct <= 20 ? 'Near lower' : 'Mid-band';
 
+  // Price vs VWAP (volume-weighted average price over the loaded candles).
+  // Skipped when there is no volume to weight by.
+  const hasVwap = Number.isFinite(vwap) && vwap > 0;
+  const vwapDiffPct = hasVwap && currentPrice > 0 ? ((currentPrice - vwap) / vwap) * 100 : 0;
+  const vwapTone: Tone = !hasVwap || Math.abs(vwapDiffPct) < 0.1 ? 'neutral' : vwapDiffPct > 0 ? 'bullish' : 'bearish';
+  const vwapBadge = !hasVwap || Math.abs(vwapDiffPct) < 0.1 ? 'At VWAP' : vwapDiffPct > 0 ? 'Above' : 'Below';
+
   // ATR volatility (as % of price)
   const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
   const atrTone: Tone = atrPct >= 5 ? 'bearish' : 'neutral';
@@ -80,9 +93,12 @@ export default function IndicatorPanel({
       <div className="space-y-0">
         <Row label="RSI (14)" value={rsi.toFixed(1)} badge={rsiBadge} tone={rsiTone} />
         <Row label="MACD histogram" value={macd.histogram.toFixed(2)} badge={macdBadge} tone={macdTone} />
-        <Row label="Trend (EMA50/200)" value={`${marketService.formatPrice(ema50)}`} badge={trendBadge} tone={trendTone} />
+        <Row label="Trend (EMA50/200)" value={priceLabel(ema50)} badge={trendBadge} tone={trendTone} />
         <Row label="Stochastic %K" value={stochastic.k.toFixed(1)} badge={stochBadge} tone={stochTone} />
         <Row label="ADX" value={adx.toFixed(1)} badge={adxBadge} tone={adxTone} />
+        {hasVwap && (
+          <Row label="VWAP" value={priceLabel(vwap)} badge={vwapBadge} tone={vwapTone} />
+        )}
         <Row label="Bollinger position" value={`${bbPct.toFixed(0)}%`} badge={bbBadge} tone={bbTone} />
         <Row label="ATR" value={`${atrPct.toFixed(2)}%`} badge={atrBadge} tone={atrTone} />
       </div>

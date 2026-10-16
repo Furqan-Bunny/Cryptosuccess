@@ -2,6 +2,7 @@
 
 import { UserProfile } from '@/types/user.types';
 import { marketService } from '@/services/market.service';
+import { FREE_DAILY_SIGNAL_LIMIT, isProStatus, remainingFreeSignals } from '@/lib/signal-allowance';
 import { FaSignal, FaTrophy, FaWallet, FaThermometerHalf } from 'react-icons/fa';
 
 interface SignalStats {
@@ -41,16 +42,16 @@ export default function MetricStrip({
   portfolioValue: number | null;
   sentimentValue: number | null;
 }) {
-  const isPro = profile?.subscription?.status === 'pro';
-  const signalsLeft = Math.max(0, 5 - (profile?.subscription?.signalsUsedToday || 0));
+  const isPro = isProStatus(profile?.subscription?.status);
+  const signalsLeft = profile ? remainingFreeSignals(profile.subscription) : null;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <Metric
         icon={<FaSignal />}
-        label="Signals today"
-        value={isPro ? 'Unlimited' : `${signalsLeft} / 5`}
-        sub={isPro ? 'Pro plan' : 'Free plan'}
+        label="Signals left today"
+        value={isPro ? 'Unlimited' : signalsLeft === null ? '—' : `${signalsLeft} / ${FREE_DAILY_SIGNAL_LIMIT}`}
+        sub={isPro ? 'Pro plan' : 'Free plan · resets 00:00 UTC'}
       />
       <Metric
         icon={<FaTrophy />}
