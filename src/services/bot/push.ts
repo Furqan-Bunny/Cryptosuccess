@@ -12,7 +12,7 @@ export interface PushCandidate {
   alertsEnabled: boolean;
   /** Linked CryptoSuccess account id, or null when the chat isn't linked. */
   linkedUserId: string | null;
-  /** profiles.subscription_status of the linked account (free | pro | cancelled). */
+  /** Effective plan of the linked account: 'pro' only while Pro access is current. */
   subscriptionStatus: string | null;
   lastPushAt: string | null;
   /** Channel chat id. Telegram group chats have negative ids and never get pushes. */

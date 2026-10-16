@@ -44,32 +44,34 @@ class StripeService {
   // {plan, interval} and derives the user from the access token — the body
   // carries no price id and no identity.
   async createCheckoutSession(data: CheckoutSessionData): Promise<CheckoutSession | null> {
-    try {
-      const { supabase } = await import('@/lib/supabase/client');
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) throw new Error('Not authenticated');
+    const { supabase } = await import('@/lib/supabase/client');
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) throw new Error('Please sign in to subscribe');
 
-      const response = await fetch('/api/stripe/checkout', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(data),
-      });
+    const response = await fetch('/api/stripe/checkout', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(data),
+    });
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => null);
-        throw new Error(err?.error || 'Failed to create checkout session');
+    if (!response.ok) {
+      // Surface a user-safe reason; the route only returns short fixed strings.
+      if (response.status === 409) {
+        throw new Error('You already have an active Pro subscription. Manage it from Settings.');
       }
-
-      const { sessionId, url } = await response.json();
-      return sessionId ? { sessionId, url } : null;
-    } catch (error) {
-      console.error('Error creating checkout session:', error);
-      return null;
+      if (response.status === 400 || response.status === 503) {
+        throw new Error('This plan is not available right now. Please try again later.');
+      }
+      if (response.status === 401) throw new Error('Please sign in to subscribe');
+      throw new Error('Failed to start checkout. Please try again.');
     }
+
+    const { sessionId, url } = await response.json();
+    return sessionId ? { sessionId, url } : null;
   }
 
   // Redirect to Stripe Checkout
@@ -154,17 +156,6 @@ class StripeService {
     } else {
       throw new Error('Failed to create customer portal session');
     }
-  }
-
-  // Handle successful payment
-  // The webhook handles the actual subscription activation in Firestore.
-  // This method just waits briefly for the webhook to process, then resolves.
-  async handlePaymentSuccess(sessionId: string): Promise<void> {
-    // The Stripe webhook (/api/stripe/webhook) handles updating the user's
-    // subscription status in Firestore. By the time the user reaches the
-    // success page, the webhook should have already fired.
-    // We just log the session for tracking purposes.
-    console.log(`Payment success for session: ${sessionId}`);
   }
 
   // Subscribe to a plan. `planId` is a SUBSCRIPTION_PLANS id ('pro_monthly', …);

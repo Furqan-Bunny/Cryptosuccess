@@ -9,6 +9,7 @@ import { addToWatchlist, storedWatchlist, WatchlistLimitError } from '@/lib/watc
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { authService } from '@/services/auth.service';
+import { isProSubscription } from '@/lib/signal-allowance';
 import { marketService } from '@/services/market.service';
 import { buildSignalReport, SignalReportData } from '@/services/signal-report.service';
 import { getAnalystTake, AnalystTake } from '@/services/ai-analyst.service';
@@ -34,7 +35,7 @@ export default function SignalsPage() {
   const [training, setTraining] = useState(false);
   const [horizon, setHorizon] = useState<string>(DEFAULT_HORIZON);
 
-  const isPro = profile?.subscription?.status === 'pro';
+  const isPro = isProSubscription(profile?.subscription);
   const maxWatchlist = isPro ? 50 : 5;
 
   const watchlist = useMemo(

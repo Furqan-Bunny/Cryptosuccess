@@ -1,6 +1,7 @@
 import {
   FREE_DAILY_SIGNAL_LIMIT,
   isProStatus,
+  isProSubscription,
   remainingFreeSignals,
   signalsUsedToday,
 } from '../../src/lib/signal-allowance';
@@ -86,5 +87,40 @@ describe('signalsUsedToday', () => {
     expect(
       signalsUsedToday({ status: 'free', signalsUsedToday: 4, lastResetDate: '2026-06-23T10:00:00Z' }, now)
     ).toBe(0);
+  });
+});
+
+describe('isProSubscription (mirrors consume_signal in 0009)', () => {
+  const now = new Date('2026-10-16T12:00:00Z');
+  const future = new Date('2026-11-01T00:00:00Z');
+  const past = new Date('2026-10-01T00:00:00Z');
+
+  it('a Stripe Pro is Pro regardless of the stored period end', () => {
+    expect(isProSubscription({ status: 'pro', planId: 'sub_123', currentPeriodEnd: past }, now)).toBe(true);
+  });
+
+  it('a crypto Pro is Pro only until its period ends', () => {
+    expect(isProSubscription({ status: 'pro', planId: 'crypto_monthly', currentPeriodEnd: future }, now)).toBe(true);
+    expect(isProSubscription({ status: 'pro', planId: 'crypto_monthly', currentPeriodEnd: past }, now)).toBe(false);
+    expect(isProSubscription({ status: 'pro', planId: 'crypto_yearly', currentPeriodEnd: null }, now)).toBe(false);
+    expect(isProSubscription({ status: 'pro', planId: 'crypto_yearly', currentPeriodEnd: new Date('x') }, now)).toBe(false);
+  });
+
+  it('free / cancelled / missing are not Pro', () => {
+    expect(isProSubscription({ status: 'free' }, now)).toBe(false);
+    expect(isProSubscription({ status: 'cancelled', planId: 'sub_1' }, now)).toBe(false);
+    expect(isProSubscription(null, now)).toBe(false);
+  });
+
+  it('a lapsed crypto Pro is metered like a free user', () => {
+    const sub = {
+      status: 'pro',
+      planId: 'crypto_monthly',
+      currentPeriodEnd: past,
+      signalsUsedToday: 2,
+      lastResetDate: now,
+    };
+    expect(remainingFreeSignals(sub, now)).toBe(FREE_DAILY_SIGNAL_LIMIT - 2);
+    expect(remainingFreeSignals({ ...sub, currentPeriodEnd: future }, now)).toBe(-1);
   });
 });

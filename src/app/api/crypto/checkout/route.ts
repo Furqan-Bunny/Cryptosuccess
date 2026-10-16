@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
+import { reportError } from '@/lib/server/report-error';
 import { expectedCryptoPriceUsd, isCryptoPlan } from '@/lib/subscription-rules';
 import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest) {
     // Public base URL for the IPN callback (must be reachable by NOWPayments),
     // and the only origin the hosted invoice may send the user back to.
     const appUrl = trustedAppOrigin(process.env.NEXT_PUBLIC_APP_URL, request.url);
-    const redirectUrl = sameOriginUrl(body?.redirectUrl, appUrl) ?? `${appUrl}/subscription/success`;
+    const redirectUrl = sameOriginUrl(body?.redirectUrl, appUrl) ?? `${appUrl}/subscription/success?provider=crypto`;
     const cancelUrl = sameOriginUrl(body?.cancelUrl, appUrl) ?? `${appUrl}/pricing`;
 
     const resp = await fetch(`${API}/invoice`, {
@@ -70,7 +71,11 @@ export async function POST(request: NextRequest) {
     });
 
     if (!resp.ok) {
-      console.error('NOWPayments invoice failed:', resp.status, await resp.text().catch(() => ''));
+      await reportError('crypto.checkout', new Error('NOWPayments invoice failed'), {
+        route: '/api/crypto/checkout',
+        status: resp.status,
+        providerError: (await resp.text().catch(() => '')).slice(0, 200),
+      });
       return NextResponse.json({ available: false, reason: 'invoice_failed' }, { status: 502 });
     }
 
@@ -81,7 +86,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ url, id: json.id });
   } catch (error) {
-    console.error('Crypto checkout error:', error);
+    await reportError('crypto.checkout', error, { route: '/api/crypto/checkout' });
     return NextResponse.json({ available: false, reason: 'error' }, { status: 500 });
   }
 }

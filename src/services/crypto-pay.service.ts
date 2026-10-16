@@ -16,7 +16,7 @@ class CryptoPayService {
       },
       body: JSON.stringify({
         billingInterval: interval,
-        redirectUrl: `${window.location.origin}/subscription/success`,
+        redirectUrl: `${window.location.origin}/subscription/success?provider=crypto`,
         cancelUrl: `${window.location.origin}/pricing`,
       }),
     });

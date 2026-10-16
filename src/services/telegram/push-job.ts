@@ -9,6 +9,7 @@ import { isChatUnreachable } from '@/lib/telegram/api';
 import { formatPushDigest, type PushItem } from '@/services/bot/format';
 import { prefsFromRow } from '@/services/bot/prefs';
 import { pushCoinsFor, pushSkipReason, type PushSkipReason } from '@/services/bot/push';
+import { isEffectivePro } from '@/lib/subscription-rules';
 
 const BATCH_LIMIT = 500;
 
@@ -63,9 +64,20 @@ export async function runPushJob(deps: PushJobDeps): Promise<PushJobResult> {
   const userIds = Array.from(new Set(Array.from(userByChat.values()).filter((v): v is string => !!v)));
   const statusByUser = new Map<string, string>();
   if (userIds.length) {
-    const { data: profiles, error: pErr } = await db.from('profiles').select('id, subscription_status').in('id', userIds);
+    const { data: profiles, error: pErr } = await db
+      .from('profiles')
+      .select('id, subscription_status, plan_id, current_period_end')
+      .in('id', userIds);
     if (pErr) throw new Error(pErr.message);
-    for (const p of profiles ?? []) statusByUser.set(p.id as string, String(p.subscription_status));
+    // A lapsed one-off crypto Pro is treated as free even before the expiry cron runs.
+    for (const p of profiles ?? []) {
+      const pro = isEffectivePro({
+        status: p.subscription_status as string | null,
+        planId: p.plan_id as string | null,
+        currentPeriodEnd: p.current_period_end as string | null,
+      });
+      statusByUser.set(p.id as string, pro ? 'pro' : String(p.subscription_status));
+    }
   }
 
   const now = Date.now();

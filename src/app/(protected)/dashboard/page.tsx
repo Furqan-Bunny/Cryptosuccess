@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { COIN_SYMBOLS, isSupportedCoin } from '@/lib/coins';
-import { isProStatus, remainingFreeSignals } from '@/lib/signal-allowance';
+import { isProSubscription, remainingFreeSignals } from '@/lib/signal-allowance';
 import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
 import { signalHistoryService } from '@/services/signal-history.service';
 import { sentimentService } from '@/services/sentiment.service';
@@ -26,7 +26,7 @@ interface SignalStats {
 
 export default function DashboardPage() {
   const { user, profile, profileError, refreshProfile } = useAuth();
-  const isPro = isProStatus(profile?.subscription?.status);
+  const isPro = isProSubscription(profile?.subscription);
   // UTC-day aware (matches consume_signal): a counter from an earlier UTC day
   // shows the full allowance, not yesterday's leftovers.
   const signalsLeft = remainingFreeSignals(profile?.subscription);

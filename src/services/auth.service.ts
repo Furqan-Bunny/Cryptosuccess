@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase/client';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { User, UserProfile } from '@/types/user.types';
-import { isProStatus, remainingFreeSignals } from '@/lib/signal-allowance';
+import { isProSubscription, remainingFreeSignals } from '@/lib/signal-allowance';
 
 // Re-export the canonical profile type for any legacy importers.
 export type { UserProfile } from '@/types/user.types';
@@ -113,12 +113,12 @@ class AuthService {
 
   async isProUser(uid: string): Promise<boolean> {
     const profile = await this.getUserProfile(uid);
-    return isProStatus(profile?.subscription.status);
+    return isProSubscription(profile?.subscription);
   }
 
   // Read-only, DISPLAY-ONLY view of the free-tier daily signal allowance.
   // The authoritative gate AND the counter mutation live server-side in the
-  // `consume_signal` Postgres RPC, called by /api/ai/analyst. This method never
+  // `consume_signal` Postgres RPC, called by /api/signals/record. This method never
   // writes; it delegates to the shared UTC-correct helper so every screen
   // shows the same number.
   async checkSignalLimit(uid: string): Promise<{ allowed: boolean; remaining: number }> {

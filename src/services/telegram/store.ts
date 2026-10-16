@@ -8,6 +8,7 @@ import type { AnalystTake } from '@/services/analyst.service';
 import { fetchSpotPrice } from '@/lib/server/binance-server';
 import { buildSignalRecord } from '@/services/bot/record';
 import { prefsFromRow } from '@/services/bot/prefs';
+import { isEffectivePro } from '@/lib/subscription-rules';
 import type { BotStore, PrefsPatch, QuotaGate, RecordedSignal } from '@/services/bot/types';
 
 /** Telegram chat ids are int64; anything else is rejected before it reaches SQL. */
@@ -61,11 +62,18 @@ export function createTelegramStore(db: SupabaseClient): BotStore {
       if (!tu?.user_id) return { linked: false, pro: false };
       const { data: prof, error: pErr } = await db
         .from('profiles')
-        .select('subscription_status')
+        .select('subscription_status, plan_id, current_period_end')
         .eq('id', tu.user_id)
         .maybeSingle();
       if (pErr) throw pErr;
-      return { linked: true, pro: prof?.subscription_status === 'pro' };
+      const pro =
+        !!prof &&
+        isEffectivePro({
+          status: prof.subscription_status,
+          planId: prof.plan_id,
+          currentPeriodEnd: prof.current_period_end,
+        });
+      return { linked: true, pro };
     },
 
     async getPrefs(chatId) {

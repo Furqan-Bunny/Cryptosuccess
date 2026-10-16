@@ -7,6 +7,8 @@ import { useAuth } from '@/hooks/useAuth';
 import { SUBSCRIPTION_PLANS, type SubscriptionPlan } from '@/types/subscription.types';
 import { FaCheck, FaArrowLeft } from 'react-icons/fa';
 import toast from 'react-hot-toast';
+import { isProSubscription } from '@/lib/signal-allowance';
+import { isCryptoPlan } from '@/lib/subscription-rules';
 
 type Interval = 'monthly' | 'yearly';
 
@@ -34,8 +36,9 @@ export default function PricingPage() {
   const [billingInterval, setBillingInterval] = useState<Interval>('monthly');
   const [isLoading, setIsLoading] = useState(false);
 
-  const status = profile?.subscription?.status;
-  const isPro = status === 'pro';
+  const isPro = isProSubscription(profile?.subscription);
+  // A one-off crypto Pro can pay again; the new period extends the current one.
+  const isCryptoPro = isPro && isCryptoPlan(profile?.subscription?.planId);
   const saving = yearlySavingPercent();
 
   const requireSignIn = (): boolean => {
@@ -54,7 +57,12 @@ export default function PricingPage() {
       await stripeService.subscribeToPlan(proPlanId(billingInterval), billingInterval);
     } catch (error) {
       console.error('Checkout error:', error);
-      toast.error('Failed to start checkout. Please try again.');
+      // Server / plan errors carry a user-safe message (e.g. "Already subscribed").
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to start checkout. Please try again.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -191,13 +199,30 @@ export default function PricingPage() {
           {/* Pro Plan */}
           <PlanCard plan={SUBSCRIPTION_PLANS.pro} billingInterval={billingInterval} popular>
             {isPro ? (
-              <button
-                type="button"
-                disabled
-                className="w-full py-3 font-semibold rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed"
-              >
-                Current Plan
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled
+                  className="w-full py-3 font-semibold rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed"
+                >
+                  Current Plan
+                </button>
+                {isCryptoPro && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleCryptoPay}
+                      disabled={isLoading}
+                      className="w-full mt-3 py-3 font-semibold rounded-lg btn-ghost border border-gray-700"
+                    >
+                      Extend with crypto (+{billingInterval === 'yearly' ? '1 year' : '1 month'})
+                    </button>
+                    <p className="text-xs text-text-secondary mt-3 text-center">
+                      Extra time is added to the end of your current period.
+                    </p>
+                  </>
+                )}
+              </>
             ) : (
               <>
                 <button

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { FaCheckCircle, FaClock, FaSpinner } from 'react-icons/fa';
 import { useAuth } from '@/hooks/useAuth';
 import { authService } from '@/services/auth.service';
+import { isProSubscription } from '@/lib/signal-allowance';
 
 // Two checkout flows land here:
 //   - Stripe redirects with ?session_id=... once the card payment succeeds. The
@@ -63,7 +64,7 @@ function SuccessInner() {
       try {
         const profile = await authService.getUserProfile(uid);
         if (cancelled) return;
-        if (profile?.subscription.status === 'pro') {
+        if (profile && isProSubscription(profile.subscription)) {
           setPeriodEnd(formatDate(profile.subscription.currentPeriodEnd));
           setPhase('active');
           // Keep the rest of the app (sidebar, gates) in sync with the new plan.

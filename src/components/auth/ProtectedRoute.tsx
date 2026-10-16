@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth, PROFILE_NOT_FOUND_MESSAGE } from '@/hooks/useAuth';
-import { isProStatus } from '@/lib/signal-allowance';
+import { isProSubscription } from '@/lib/signal-allowance';
 import LoadingSpinner from '@/components/shared/LoadingSpinner';
 import { FaExclamationTriangle } from 'react-icons/fa';
 
@@ -53,7 +53,7 @@ export default function ProtectedRoute({
 
     // Requires Pro: only redirect on a KNOWN non-Pro profile. An unknown
     // (failed-to-load) profile is handled by the error state below.
-    if (requirePro && profile && !isProStatus(profile.subscription.status)) {
+    if (requirePro && profile && !isProSubscription(profile.subscription)) {
       router.push('/pricing?upgrade=true');
     }
   }, [user, profile, loading, requirePro, redirectTo, router]);
@@ -111,7 +111,7 @@ export default function ProtectedRoute({
   }
 
   // Requires Pro but the user is known to be non-Pro (redirecting)
-  if (requirePro && profile && !isProStatus(profile.subscription.status)) {
+  if (requirePro && profile && !isProSubscription(profile.subscription)) {
     return null;
   }
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { authService } from '@/services/auth.service';
-import { FREE_DAILY_SIGNAL_LIMIT, isProStatus, signalsUsedToday } from '@/lib/signal-allowance';
+import { FREE_DAILY_SIGNAL_LIMIT, isProSubscription, signalsUsedToday } from '@/lib/signal-allowance';
 import { formatDate } from '@/lib/dates';
 import { FaUser, FaBell, FaCrown, FaCreditCard, FaShieldAlt } from 'react-icons/fa';
 import Link from 'next/link';
@@ -14,7 +14,7 @@ import TelegramLinkCard from '@/components/settings/TelegramLinkCard';
 export default function SettingsPage() {
   const { user, profile, refreshProfile } = useAuth();
 
-  const isPro = isProStatus(profile?.subscription?.status);
+  const isPro = isProSubscription(profile?.subscription);
   const customerId = profile?.subscription?.customerId;
   const [billingLoading, setBillingLoading] = useState(false);
 
