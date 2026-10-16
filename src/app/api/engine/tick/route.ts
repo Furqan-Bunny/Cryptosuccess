@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
 import { runEngineTick } from '@/services/engine/order-engine';
 
 export const dynamic = 'force-dynamic';
@@ -13,13 +14,11 @@ async function handler(request: NextRequest) {
   if (!isCronAuthorized(request)) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
-  try {
+  // Run is recorded in cron_runs; a throw is reported and answered with 500.
+  return withCronMonitoring('engine-tick', async () => {
     const result = await runEngineTick();
     return NextResponse.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('Engine tick error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

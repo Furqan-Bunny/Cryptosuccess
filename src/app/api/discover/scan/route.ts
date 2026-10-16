@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
 import { createServiceClient } from '@/lib/supabase/server';
 import { fetchUsdtTickers } from '@/lib/server/binance-server';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -13,7 +14,7 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  return withCronMonitoring('discover-scan', async () => {
     const db = createServiceClient();
 
     const tickers = await fetchUsdtTickers();
@@ -24,11 +25,14 @@ async function handler(request: NextRequest) {
     }
     const currentSymbols = Array.from(current.keys());
 
-    const { data: snap } = await db
+    const { data: snap, error: snapErr } = await db
       .from('discovery_state')
       .select('symbols')
       .eq('id', 'known_symbols')
       .maybeSingle();
+    // A failed read must not be mistaken for "first run" (which would re-seed
+    // and drop this window's new listings).
+    if (snapErr) throw new Error(snapErr.message);
     const known: string[] = snap?.symbols ?? [];
 
     let added = 0;
@@ -42,20 +46,20 @@ async function handler(request: NextRequest) {
           pair: `${symbol}USDT`,
           quote_volume: current.get(symbol) ?? 0,
         }));
-        await db.from('new_listings').insert(rows);
+        const { error: insertErr } = await db.from('new_listings').insert(rows);
+        // Don't advance the snapshot past listings we failed to record.
+        if (insertErr) throw new Error(insertErr.message);
         added = rows.length;
       }
     }
 
-    await db
+    const { error: upsertErr } = await db
       .from('discovery_state')
       .upsert({ id: 'known_symbols', symbols: currentSymbols, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    if (upsertErr) throw new Error(upsertErr.message);
 
     return NextResponse.json({ ok: true, total: currentSymbols.length, added, seeded });
-  } catch (error) {
-    console.error('Discover scan error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {
