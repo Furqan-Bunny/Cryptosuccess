@@ -33,6 +33,17 @@ export interface CronJobDef {
   graceMinutes: number;
   /** Who triggers it — documentation for the ops status payload. */
   scheduledBy: string;
+  /**
+   * Env vars the job needs. When any is unset the route answers
+   * `not_configured` without running, so the job is reported as disabled
+   * instead of degraded (an optional feature that is off is not an outage).
+   */
+  requiresEnv?: readonly string[];
+}
+
+/** Is the job switched on in this deployment (all required env vars set)? */
+export function isCronJobEnabled(def: CronJobDef, env: NodeJS.ProcessEnv = process.env): boolean {
+  return (def.requiresEnv ?? []).every(name => !!env[name]?.trim());
 }
 
 // Expected cadence per job. Hourly jobs are driven by .github/workflows/scheduler.yml
@@ -55,8 +66,34 @@ export const CRON_JOBS = {
   'dca-run': { path: '/api/dca/run', cadenceMinutes: 1440, graceMinutes: 360, scheduledBy: 'vercel daily' },
   'staking-refresh': { path: '/api/staking/refresh', cadenceMinutes: 1440, graceMinutes: 360, scheduledBy: 'vercel daily' },
   'discover-scan': { path: '/api/discover/scan', cadenceMinutes: 1440, graceMinutes: 360, scheduledBy: 'vercel daily' },
-  'brief-generate': { path: '/api/brief/generate', cadenceMinutes: 1440, graceMinutes: 360, scheduledBy: 'vercel daily' },
+  'brief-generate': {
+    path: '/api/brief/generate',
+    cadenceMinutes: 1440,
+    graceMinutes: 360,
+    scheduledBy: 'vercel daily',
+    requiresEnv: ['ANTHROPIC_API_KEY'],
+  },
   'ops-prune': { path: '/api/ops/prune', cadenceMinutes: 1440, graceMinutes: 360, scheduledBy: 'vercel daily' },
+  'subscriptions-expire': {
+    path: '/api/subscriptions/expire',
+    cadenceMinutes: 1440,
+    graceMinutes: 360,
+    scheduledBy: 'vercel daily',
+  },
+  'telegram-push': {
+    path: '/api/telegram/push',
+    cadenceMinutes: 1440,
+    graceMinutes: 360,
+    scheduledBy: 'vercel daily',
+    requiresEnv: ['TELEGRAM_BOT_TOKEN', 'ANTHROPIC_API_KEY'],
+  },
+  'telegram-followups': {
+    path: '/api/telegram/followups',
+    cadenceMinutes: 60,
+    graceMinutes: 45,
+    scheduledBy: 'github-actions hourly + vercel daily',
+    requiresEnv: ['TELEGRAM_BOT_TOKEN'],
+  },
 } as const satisfies Record<string, CronJobDef>;
 
 export type CronName = keyof typeof CRON_JOBS;

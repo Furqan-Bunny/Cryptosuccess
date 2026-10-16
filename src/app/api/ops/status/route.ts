@@ -6,6 +6,7 @@ import {
   CRON_JOBS,
   CRON_NAMES,
   computeCronHealth,
+  isCronJobEnabled,
   summarizeErrorEvents,
   type CronRunRow,
   type ErrorEventRow,
@@ -83,9 +84,14 @@ export async function GET(request: NextRequest) {
     const earliest = (earliestRes.data ?? [])[0] as { started_at: string } | undefined;
     const monitoringSinceMs = earliest ? new Date(earliest.started_at).getTime() : null;
 
-    const crons = perJob.map(j =>
-      computeCronHealth(j.name, CRON_JOBS[j.name], j.latest, j.lastSuccess, now, monitoringSinceMs),
-    );
+    const crons = perJob.map(j => {
+      const def = CRON_JOBS[j.name];
+      const health = computeCronHealth(j.name, def, j.latest, j.lastSuccess, now, monitoringSinceMs);
+      // A feature that is not configured here (e.g. no Telegram bot) is reported
+      // but never counts as degraded.
+      const enabled = isCronJobEnabled(def);
+      return enabled ? { ...health, enabled } : { ...health, enabled, degraded: false };
+    });
     const degraded = crons.filter(c => c.degraded).map(c => c.name);
 
     return NextResponse.json(

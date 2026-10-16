@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
 import { createServiceClient } from '@/lib/supabase/server';
 import { isTelegramConfigured, sendMessage } from '@/lib/telegram/api';
 import { isSupabaseConfigured, resolveBaseUrl } from '@/lib/telegram/env';
@@ -21,7 +22,7 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'not_configured' }, { status: 503 });
   }
 
-  try {
+  return withCronMonitoring('telegram-followups', async () => {
     const result = await runFollowUpJob({
       db: createServiceClient(),
       send: (chatId, text) => sendMessage(chatId, text),
@@ -30,10 +31,7 @@ async function handler(request: NextRequest) {
       delayMs: DELAY_BETWEEN_MESSAGES_MS,
     });
     return NextResponse.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('telegram follow-up error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

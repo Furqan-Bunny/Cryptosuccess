@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
+import { reportError } from '@/lib/server/report-error';
 import { createServiceClient } from '@/lib/supabase/server';
 import { fetchSpotPrices } from '@/lib/server/binance-server';
 import { deriveOutcome, SignalAction } from '@/lib/signal-outcome';
@@ -43,7 +45,11 @@ async function notifyScoredSignals(db: ReturnType<typeof createServiceClient>, s
       const { error: insErr } = await db.from('notifications').insert(rows);
       if (insErr) throw new Error(insErr.message);
     } catch (error) {
-      console.error('Signal notification error (evaluation unaffected):', error);
+      await reportError('cron.signals-evaluate.notify', error, {
+        route: '/api/signals/evaluate',
+        level: 'warn',
+        alert: false,
+      });
     }
   }
 }
@@ -59,7 +65,9 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  // A throw becomes the usual { ok:false, reason:'error' } 500, recorded in
+  // cron_runs and reported by the monitor.
+  return withCronMonitoring('signals-evaluate', async () => {
     const db = createServiceClient();
     const cutoff = new Date(Date.now() - DAY_MS).toISOString();
 
@@ -127,10 +135,7 @@ async function handler(request: NextRequest) {
     await notifyScoredSignals(db, scored);
 
     return NextResponse.json({ ok: true, evaluated });
-  } catch (error) {
-    console.error('Signal evaluation error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

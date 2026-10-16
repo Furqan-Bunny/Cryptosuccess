@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
 import { createServiceClient } from '@/lib/supabase/server';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,16 +16,13 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  return withCronMonitoring('subscriptions-expire', async () => {
     const db = createServiceClient();
     // Migration 0009: SECURITY DEFINER, service_role only.
     const { data, error } = await db.rpc('expire_crypto_subscriptions');
     if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true, expired: Number(data ?? 0) });
-  } catch (error) {
-    console.error('Subscription expiry error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

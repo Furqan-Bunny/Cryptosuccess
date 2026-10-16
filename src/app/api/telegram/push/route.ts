@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
 import { createServiceClient } from '@/lib/supabase/server';
 import { fetchSpotPrices } from '@/lib/server/binance-server';
 import { isTelegramConfigured, sendMessage } from '@/lib/telegram/api';
@@ -28,7 +29,7 @@ async function handler(request: NextRequest) {
   }
 
   const started = Date.now();
-  try {
+  return withCronMonitoring('telegram-push', async () => {
     const db = createServiceClient();
     const result = await runPushJob({
       db,
@@ -41,10 +42,7 @@ async function handler(request: NextRequest) {
       delayMs: DELAY_BETWEEN_CHATS_MS,
     });
     return NextResponse.json({ ok: true, ...result });
-  } catch (error) {
-    console.error('telegram push error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

@@ -9,6 +9,7 @@ import {
   CRON_NAMES,
   STUCK_AFTER_MINUTES,
   computeCronHealth,
+  isCronJobEnabled,
   summarizeResponseBody,
   summarizeErrorEvents,
   type CronJobDef,
@@ -135,6 +136,28 @@ describe('CRON_JOBS registry', () => {
 
   it('keeps names short enough for the cron_runs check constraint', () => {
     for (const name of CRON_NAMES) expect(name.length).toBeLessThanOrEqual(64);
+  });
+
+  it('matches the vercel.json schedule one-to-one', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const vercel = require('../../vercel.json') as { crons: { path: string; schedule: string }[] };
+    const scheduled = vercel.crons.map(c => c.path).sort();
+    const registered = CRON_NAMES.map(n => CRON_JOBS[n].path).sort();
+    expect(scheduled).toEqual(registered);
+  });
+});
+
+describe('isCronJobEnabled', () => {
+  const def: CronJobDef = { path: '/api/x', cadenceMinutes: 60, graceMinutes: 10, scheduledBy: 'test', requiresEnv: ['A', 'B'] };
+
+  it('is enabled only when every required env var is set', () => {
+    expect(isCronJobEnabled(def, { A: '1', B: '2' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(isCronJobEnabled(def, { A: '1' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isCronJobEnabled(def, { A: '1', B: '  ' } as NodeJS.ProcessEnv)).toBe(false);
+  });
+
+  it('jobs without requirements are always enabled', () => {
+    expect(isCronJobEnabled({ ...def, requiresEnv: undefined }, {} as NodeJS.ProcessEnv)).toBe(true);
   });
 });
 

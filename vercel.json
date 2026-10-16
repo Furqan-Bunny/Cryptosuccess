@@ -2,12 +2,15 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     { "path": "/api/anchor/run", "schedule": "30 1 * * *" },
+    { "path": "/api/subscriptions/expire", "schedule": "0 3 * * *" },
     { "path": "/api/ops/prune", "schedule": "15 3 * * *" },
     { "path": "/api/signals/evaluate", "schedule": "0 4 * * *" },
+    { "path": "/api/telegram/followups", "schedule": "15 4 * * *" },
     { "path": "/api/engine/tick", "schedule": "0 5 * * *" },
     { "path": "/api/discover/scan", "schedule": "0 6 * * *" },
     { "path": "/api/staking/refresh", "schedule": "0 7 * * *" },
     { "path": "/api/brief/generate", "schedule": "0 8 * * *" },
-    { "path": "/api/dca/run", "schedule": "0 9 * * *" }
+    { "path": "/api/dca/run", "schedule": "0 9 * * *" },
+    { "path": "/api/telegram/push", "schedule": "0 13 * * *" }
   ]
 }
