@@ -36,25 +36,77 @@ function mapRow(row: any): StoredSignal {
   };
 }
 
+export interface RecordSignalInput {
+  symbol: string;
+  action: 'BUY' | 'SELL' | 'HOLD';
+  confidence: number;
+  entryPrice: number;
+  targetPrice: number;
+  stopLoss: number;
+  reasoning: string;
+  horizon?: string;
+}
+
+export interface RecordSignalResult {
+  id: string;
+  // Free-tier signals left today after this one; -1 = unlimited (Pro).
+  remaining: number;
+}
+
+/**
+ * A failed POST /api/signals/record. `reason` is the server's machine code
+ * (limit_reached, stale_price, price_unavailable, quota_unavailable, …);
+ * `remaining` is set when the server reported the allowance.
+ */
+export class SignalRecordError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly status: number,
+    public readonly remaining?: number
+  ) {
+    super(reason);
+    this.name = 'SignalRecordError';
+  }
+}
+
 class SignalHistoryService {
-  async storeSignal(signal: Omit<StoredSignal, 'id' | 'createdAt' | 'outcome'>): Promise<string> {
-    const { data, error } = await supabase
-      .from('signals')
-      .insert({
-        user_id: signal.userId,
-        symbol: signal.symbol,
-        action: signal.action,
-        confidence: signal.confidence,
-        entry_price: signal.entryPrice,
-        target_price: signal.targetPrice,
-        stop_loss: signal.stopLoss,
-        reasoning: signal.reasoning,
-        outcome: 'pending',
-      })
-      .select('id')
-      .single();
-    if (error) throw new Error(error.message);
-    return data.id;
+  /**
+   * Record a generated signal through the server (the only writer of `signals`
+   * since migration 0009). The server spends the daily credit, re-prices the
+   * entry on live spot and sets the timestamp, so the track record can't be
+   * back-filled. Throws SignalRecordError on any non-2xx.
+   */
+  async storeSignal(signal: RecordSignalInput): Promise<RecordSignalResult> {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) throw new SignalRecordError('unauthorized', 401);
+
+    let res: Response;
+    try {
+      res = await fetch('/api/signals/record', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          symbol: signal.symbol,
+          action: signal.action,
+          confidence: signal.confidence,
+          entryPrice: signal.entryPrice,
+          targetPrice: signal.targetPrice,
+          stopLoss: signal.stopLoss,
+          reasoning: signal.reasoning,
+          horizon: signal.horizon,
+        }),
+      });
+    } catch {
+      throw new SignalRecordError('network_error', 0);
+    }
+
+    const data = await res.json().catch(() => null);
+    const remaining = typeof data?.remaining === 'number' ? data.remaining : undefined;
+    if (!res.ok || !data?.ok || typeof data.id !== 'string') {
+      throw new SignalRecordError(String(data?.reason ?? 'error'), res.status, remaining);
+    }
+    return { id: data.id, remaining: remaining ?? -1 };
   }
 
   async getUserSignals(userId: string, maxResults = 20): Promise<StoredSignal[]> {

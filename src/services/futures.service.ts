@@ -70,7 +70,7 @@ class FuturesService {
 
       const { quantity, liquidationPrice } = buildPosition(side, entryPrice, leverage, marginUsd);
 
-      // Lock margin first; if this throws, no position is created.
+      // Lock margin first; if this throws (overdraft), no position is created.
       await paperAccountService.adjustBalance(uid, -marginUsd);
 
       const { data, error } = await supabase
@@ -89,7 +89,18 @@ class FuturesService {
         })
         .select('id')
         .single();
-      if (error) throw new Error(error.message);
+      if (error || !data) {
+        // The margin was already debited — give it back so a failed open never
+        // silently loses paper cash.
+        const reason = error?.message || 'Failed to open position';
+        try {
+          await paperAccountService.adjustBalance(uid, marginUsd);
+        } catch (refundErr) {
+          console.error('Margin refund after failed open also failed:', refundErr);
+          return { success: false, error: `${reason}. Your margin could not be returned automatically — please contact support.` };
+        }
+        return { success: false, error: `${reason}. Your margin was returned.` };
+      }
       return { success: true, positionId: data.id };
     } catch (error: any) {
       console.error('Error opening futures position:', error);
@@ -111,12 +122,13 @@ class FuturesService {
       if (pos.status !== 'open') return { success: false, error: `Position already ${pos.status}` };
 
       const markPrice = (await marketService.getCurrentPrice(pos.symbol)).price;
+      if (!markPrice || markPrice <= 0) return { success: false, error: 'Could not fetch mark price' };
       const realizedPnl = computePnl(pos.side, pos.entryPrice, markPrice, pos.quantity);
 
-      const credit = Math.max(0, pos.marginUsd + realizedPnl);
-      await paperAccountService.adjustBalance(uid, credit);
-
-      await supabase
+      // Close FIRST, conditional on the position still being open, and only
+      // credit if this call made the transition — so a double click, or the
+      // engine liquidating it at the same moment, can never pay out twice.
+      const { data: closed, error: closeErr } = await supabase
         .from('futures_positions')
         .update({
           status: 'closed',
@@ -124,7 +136,24 @@ class FuturesService {
           realized_pnl: realizedPnl,
           closed_at: new Date().toISOString(),
         })
-        .eq('id', positionId);
+        .eq('id', positionId)
+        .eq('status', 'open')
+        .select('id');
+      if (closeErr) throw new Error(closeErr.message);
+      if (!closed || closed.length !== 1) return { success: false, error: 'Position is no longer open' };
+
+      const credit = Math.max(0, pos.marginUsd + realizedPnl);
+      try {
+        await paperAccountService.adjustBalance(uid, credit);
+      } catch (creditErr) {
+        // Re-open so the user can retry instead of losing the payout.
+        await supabase
+          .from('futures_positions')
+          .update({ status: 'open', close_price: null, realized_pnl: null, closed_at: null })
+          .eq('id', positionId)
+          .eq('status', 'closed');
+        throw creditErr;
+      }
 
       return { success: true, realizedPnl };
     } catch (error: any) {

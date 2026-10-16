@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { headers } from 'next/headers';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServiceClient } from '@/lib/supabase/server';
+import { mapStripeStatus, stripePeriodEndIso } from '@/lib/subscription-rules';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -10,6 +12,49 @@ function getStripe() {
   return new Stripe(process.env.STRIPE_SECRET_KEY, {
     apiVersion: '2025-09-30.clover',
   });
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function asUuid(value: unknown): string | null {
+  return typeof value === 'string' && UUID_RE.test(value) ? value : null;
+}
+
+function idOf(ref: string | { id: string } | null | undefined): string | null {
+  if (!ref) return null;
+  return typeof ref === 'string' ? ref : ref.id;
+}
+
+// metadata.userId is written by our own checkout route (server-derived); fall
+// back to the Stripe customer id for subscriptions created outside that flow.
+async function resolveUserId(
+  db: SupabaseClient,
+  metadataUserId: unknown,
+  customerId: string | null
+): Promise<string | null> {
+  const fromMeta = asUuid(metadataUserId);
+  if (fromMeta) return fromMeta;
+  if (!customerId) return null;
+  const { data, error } = await db.from('profiles').select('id').eq('customer_id', customerId).limit(1);
+  if (error) throw new Error(error.message);
+  return data?.[0]?.id ?? null;
+}
+
+async function updateProfile(db: SupabaseClient, userId: string, patch: Record<string, unknown>) {
+  const { error } = await db.from('profiles').update(patch).eq('id', userId);
+  // Throw so the idempotency claim is released and Stripe retries the event.
+  if (error) throw new Error(`profile update failed: ${error.message}`);
+}
+
+// Whether a subscription event may change this profile: the profile must be on
+// THIS subscription (or on none). Stops a late event for an old, cancelled
+// subscription from downgrading a user who has since re-subscribed or paid with
+// crypto.
+async function profileTracksSubscription(db: SupabaseClient, userId: string, subscriptionId: string) {
+  const { data, error } = await db.from('profiles').select('plan_id').eq('id', userId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return false;
+  return data.plan_id == null || data.plan_id === subscriptionId;
 }
 
 export async function POST(request: NextRequest) {
@@ -62,68 +107,88 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Handle the event
       switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
-        const userId = session.metadata?.userId || session.client_reference_id;
+        if (session.mode !== 'subscription') break;
 
-        if (userId) {
-          await db
-            .from('profiles')
-            .update({
-              subscription_status: 'pro',
-              customer_id: session.customer as string,
-              plan_id: session.subscription as string,
-              current_period_end: null, // set by subscription.updated
-              signals_used_today: 0,
-              last_reset_date: new Date().toISOString(),
-            })
-            .eq('id', userId);
-          console.log(`Subscription activated for user: ${userId}`);
-        } else {
-          console.error('No userId found in checkout session metadata');
+        const userId = asUuid(session.metadata?.userId) ?? asUuid(session.client_reference_id);
+        if (!userId) {
+          console.error('No valid userId in checkout session metadata / client_reference_id');
+          break;
         }
+        // Card checkouts are paid on completion; a trial needs no payment. Any
+        // other state waits for customer.subscription.updated.
+        if (session.payment_status !== 'paid' && session.payment_status !== 'no_payment_required') {
+          console.log(`Checkout completed without payment (${session.payment_status}) for user: ${userId}`);
+          break;
+        }
+
+        const subscriptionId = idOf(session.subscription);
+        let periodEnd: string | null = null;
+        if (subscriptionId) {
+          // In API 2025-09-30.clover the period end lives on the subscription
+          // items; fetch the subscription so the profile shows it immediately.
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          if (mapStripeStatus(subscription.status) === 'free') {
+            console.log(`Checkout completed but subscription is ${subscription.status} for user: ${userId}`);
+            break;
+          }
+          periodEnd = stripePeriodEndIso(subscription);
+        }
+
+        await updateProfile(db, userId, {
+          subscription_status: 'pro',
+          customer_id: idOf(session.customer),
+          plan_id: subscriptionId,
+          current_period_end: periodEnd,
+          signals_used_today: 0,
+          last_reset_date: new Date().toISOString(),
+        });
+        console.log(`Subscription activated for user: ${userId}`);
         break;
       }
 
+      case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const subscription = event.data.object as Stripe.Subscription;
-        let userId = subscription.metadata?.userId;
-        if (!userId) {
-          // Subscriptions created outside our checkout flow have no metadata.userId
-          // — resolve the user by their Stripe customer id instead.
-          const { data } = await db.from('profiles').select('id').eq('customer_id', subscription.customer as string).limit(1);
-          userId = data?.[0]?.id;
-        }
+        const customerId = idOf(subscription.customer);
+        const userId = await resolveUserId(db, subscription.metadata?.userId, customerId);
+        if (!userId) break;
 
-        if (userId) {
-          const status = subscription.status === 'active' ? 'pro' : 'free';
-          await db
-            .from('profiles')
-            .update({
-              subscription_status: status,
-              current_period_end: new Date((subscription as any).current_period_end * 1000).toISOString(),
-            })
-            .eq('id', userId);
-          console.log(`Subscription updated for user: ${userId}, status: ${status}`);
+        const status = mapStripeStatus(subscription.status);
+        if (status == null) {
+          // e.g. `incomplete`: first payment still pending — leave access as is.
+          console.log(`Subscription ${subscription.status} for user: ${userId} (no change)`);
+          break;
         }
+        const periodEnd = stripePeriodEndIso(subscription);
+
+        if (status === 'pro') {
+          await updateProfile(db, userId, {
+            subscription_status: 'pro',
+            plan_id: subscription.id,
+            ...(customerId ? { customer_id: customerId } : {}),
+            ...(periodEnd ? { current_period_end: periodEnd } : {}),
+          });
+        } else if (await profileTracksSubscription(db, userId, subscription.id)) {
+          await updateProfile(db, userId, {
+            subscription_status: 'free',
+            plan_id: null,
+            current_period_end: periodEnd,
+          });
+        }
+        console.log(`Subscription updated for user: ${userId}, status: ${status}`);
         break;
       }
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription;
-        let userId = subscription.metadata?.userId;
-        if (!userId) {
-          const { data } = await db.from('profiles').select('id').eq('customer_id', subscription.customer as string).limit(1);
-          userId = data?.[0]?.id;
-        }
+        const userId = await resolveUserId(db, subscription.metadata?.userId, idOf(subscription.customer));
+        if (!userId) break;
 
-        if (userId) {
-          await db
-            .from('profiles')
-            .update({ subscription_status: 'free', plan_id: null, current_period_end: null })
-            .eq('id', userId);
+        if (await profileTracksSubscription(db, userId, subscription.id)) {
+          await updateProfile(db, userId, { subscription_status: 'free', plan_id: null, current_period_end: null });
           console.log(`Subscription cancelled for user: ${userId}`);
         }
         break;
@@ -131,10 +196,13 @@ export async function POST(request: NextRequest) {
 
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
-        const customerId = invoice.customer as string;
+        const customerId = idOf(invoice.customer);
+        if (!customerId) break;
 
         const { data } = await db.from('profiles').select('id').eq('customer_id', customerId).limit(1);
         if (data && data.length > 0) {
+          // Access stays on during Stripe's retry window (past_due → pro); the
+          // subscription.updated / deleted events drive any downgrade.
           console.log(`Payment failed for user: ${data[0].id}, customer: ${customerId}`);
         }
         break;

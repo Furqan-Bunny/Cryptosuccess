@@ -22,11 +22,11 @@ class PaperAccountService {
 
     if (data) return { userId: uid, balanceUsd: Number(data.balance_usd) };
 
-    // Create on first access (ignore duplicate if a race created it).
-    await supabase
-      .from('paper_accounts')
-      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD }, { onConflict: 'user_id', ignoreDuplicates: true });
-    return { userId: uid, balanceUsd: STARTING_BALANCE_USD };
+    // Create on first access. Clients can no longer write paper_accounts
+    // directly (migration 0009); a zero adjustment creates the row with the
+    // starting balance (race-safe upsert inside the RPC) and returns it.
+    const balanceUsd = await this.adjustBalance(uid, 0);
+    return { userId: uid, balanceUsd };
   }
 
   async getBalance(uid: string): Promise<number> {
@@ -44,10 +44,14 @@ class PaperAccountService {
     return Number(data);
   }
 
-  async reset(uid: string): Promise<void> {
-    await supabase
-      .from('paper_accounts')
-      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD, updated_at: new Date().toISOString() });
+  /**
+   * Reset the authenticated user's cash to the starting balance via the
+   * `reset_paper_balance` RPC (the `uid` arg is kept for call-site
+   * compatibility; the server uses auth.uid()).
+   */
+  async reset(_uid: string): Promise<void> {
+    const { error } = await supabase.rpc('reset_paper_balance');
+    if (error) throw new Error(error.message);
   }
 }
 

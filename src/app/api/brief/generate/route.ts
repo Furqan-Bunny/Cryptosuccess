@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createServiceClient } from '@/lib/supabase/server';
+import { isCronAuthorized } from '@/lib/server/cron-auth';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // research can take a while; capped to the Vercel plan limit
@@ -23,14 +24,10 @@ const WEB_TOOLS: any[] = [
   { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
 ];
 
-function authorized(request: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // not configured (dev) — allow; set CRON_SECRET in prod to lock down
-  return request.headers.get('authorization') === `Bearer ${secret}`;
-}
-
 async function handler(request: NextRequest) {
-  if (!authorized(request)) {
+  // Shared cron gate: constant-time compare, fails CLOSED in production when
+  // CRON_SECRET is unset (this route spends Anthropic credit on every call).
+  if (!isCronAuthorized(request)) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
   if (!process.env.ANTHROPIC_API_KEY) {

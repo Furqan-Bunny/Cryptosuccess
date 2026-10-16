@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +11,9 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get('code');
-  const next = searchParams.get('next') ?? '/dashboard';
+  // Only same-site paths: `?next=//evil.com` (or `/\evil.com`) would otherwise
+  // bounce a freshly signed-in user to another site.
+  const next = safeRedirectPath(searchParams.get('next'), '/dashboard');
 
   if (code) {
     const cookieStore = cookies();
