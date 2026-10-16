@@ -4,7 +4,7 @@ import { summarizeTimeframe } from './market-context.service';
 import { applyMtfConfirmation, MtfResult } from './ai/mtf-confirmation';
 import { aiSignalsService, adjustModelConfidence } from './ai-signals.service';
 import { getCoinProfile } from './ai/coin-profiles';
-import { getHorizon } from '@/lib/horizons';
+import { getHorizon, horizonLevels } from '@/lib/horizons';
 
 export interface HorizonSignal {
   signal: TradeSignal;
@@ -65,9 +65,10 @@ export async function generateHorizonSignal(symbol: string, horizonId: string): 
   const mtf = applyMtfConfirmation(action, confidence, summaries, h.biasTF);
 
   // 3) Stop / target scaled by horizon
+  //    (levels below the entry are floored so a high-ATR coin on a long horizon
+  //    never gets a zero / negative stop or target).
   const dir = mtf.action;
-  const stopLoss = dir === 'SELL' ? price + h.atr.stop * atr : price - h.atr.stop * atr;
-  const targetPrice = dir === 'SELL' ? price - h.atr.target * atr : price + h.atr.target * atr;
+  const { stopLoss, targetPrice } = horizonLevels(dir, price, atr, h.atr);
 
   const reasoning =
     `${h.label}: ${engine === 'ai' ? 'AI model' : 'technical engine'} on ${h.entryTF} → ${dir} ` +

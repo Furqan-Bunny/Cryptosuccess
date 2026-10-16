@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createServiceClient } from '@/lib/supabase/server';
+import { isCronAuthorized } from '@/lib/server/cron-auth';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
+import { reportError } from '@/lib/server/report-error';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // research can take a while; capped to the Vercel plan limit
@@ -23,20 +26,21 @@ const WEB_TOOLS: any[] = [
   { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 4 },
 ];
 
-function authorized(request: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // not configured (dev) — allow; set CRON_SECRET in prod to lock down
-  return request.headers.get('authorization') === `Bearer ${secret}`;
-}
-
 async function handler(request: NextRequest) {
-  if (!authorized(request)) {
+  // Shared cron gate: constant-time compare, fails CLOSED in production when
+  // CRON_SECRET is unset (this route spends Anthropic credit on every call).
+  if (!isCronAuthorized(request)) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
   if (!process.env.ANTHROPIC_API_KEY) {
     return NextResponse.json({ ok: false, reason: 'not_configured' }, { status: 500 });
   }
 
+  // The monitor records the run; a 5xx below counts as a failed run and alerts.
+  return withCronMonitoring('brief-generate', () => generateBrief());
+}
+
+async function generateBrief() {
   try {
     const client = new Anthropic();
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: PROMPT }];
@@ -51,15 +55,20 @@ async function handler(request: NextRequest) {
     if (!markdown) return NextResponse.json({ ok: false, reason: 'empty' }, { status: 502 });
 
     const date = new Date().toISOString().slice(0, 10);
-    await createServiceClient().from('briefs').upsert({ date, markdown }, { onConflict: 'date' });
+    const { error: saveErr } = await createServiceClient()
+      .from('briefs')
+      .upsert({ date, markdown }, { onConflict: 'date' });
+    if (saveErr) throw new Error(`brief save failed: ${saveErr.message}`);
 
     return NextResponse.json({ ok: true, date });
   } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      console.error(`Brief API error ${error.status}:`, error.message);
-    } else {
-      console.error('Brief generation error:', error);
-    }
+    // Detail goes to the log / error_events; the monitor sends the one alert.
+    await reportError('cron.brief-generate.detail', error, {
+      route: '/api/brief/generate',
+      level: 'warn',
+      alert: false,
+      ...(error instanceof Anthropic.APIError ? { apiStatus: error.status } : {}),
+    });
     return NextResponse.json({ ok: false, reason: 'error' }, { status: 502 });
   }
 }

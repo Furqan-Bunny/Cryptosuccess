@@ -38,6 +38,9 @@ interface Quote {
   issues?: { allowance?: { spender: Hex } | null };
 }
 
+// Tokens for the configured chain (fixed per build, so computed once).
+const CHAIN_TOKENS: Token[] = TOKENS[activeChain.id] ?? [];
+
 export default function LiveSwapPanel() {
   const { address, isConnected, chainId } = useAccount();
   const publicClient = usePublicClient();
@@ -45,7 +48,7 @@ export default function LiveSwapPanel() {
   const { writeContractAsync } = useWriteContract();
   const { switchChain } = useSwitchChain();
 
-  const tokens = TOKENS[activeChain.id] ?? [];
+  const tokens = CHAIN_TOKENS;
   const [sellSym, setSellSym] = useState(tokens[0]?.symbol ?? 'ETH');
   const [buySym, setBuySym] = useState(tokens[1]?.symbol ?? tokens[0]?.symbol ?? 'ETH');
   const [amount, setAmount] = useState('');

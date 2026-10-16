@@ -27,35 +27,5 @@ export interface PricePoint {
   volume: number;
 }
 
-export interface CoinInfo {
-  symbol: CoinSymbol;
-  name: string;
-  logo: string;
-  description?: string;
-  website?: string;
-  marketRank?: number;
-}
-
-export const COIN_INFO: Record<CoinSymbol, CoinInfo> = {
-  ETH: {
-    symbol: 'ETH',
-    name: 'Ethereum',
-    logo: '/coins/eth.svg',
-    description: 'Decentralized smart contract platform',
-    website: 'https://ethereum.org',
-  },
-  SOL: {
-    symbol: 'SOL',
-    name: 'Solana',
-    logo: '/coins/sol.svg',
-    description: 'High-performance blockchain platform',
-    website: 'https://solana.com',
-  },
-  BNB: {
-    symbol: 'BNB',
-    name: 'Binance Coin',
-    logo: '/coins/bnb.svg',
-    description: 'Native token of Binance ecosystem',
-    website: 'https://www.binance.com',
-  },
-};
+// Coin names/icons/supplies live in the catalogue: see CoinMeta, getCoinName()
+// and getCoinIcon() in src/lib/coins.ts.

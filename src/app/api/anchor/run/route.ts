@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
 import { createServiceClient } from '@/lib/supabase/server';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
+import { reportError } from '@/lib/server/report-error';
 import { hashLeaf, computeMerkleRoot } from '@/lib/merkle';
 import { canonicalizeLeaf, LeafFields } from '@/lib/track-record-leaf';
+import { readAllPages } from '@/lib/paging';
+import { chunk } from '@/lib/chunk';
 import {
   isAnchoringEnabled,
   sendAnchor,
@@ -15,10 +19,19 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const MAX_DAYS_PER_RUN = 5; // bound work; backfill catches up over subsequent runs
+// signal_leaves rows per insert request (each carries a canonical string), so a
+// busy day never exceeds the request body limit.
+const LEAF_INSERT_CHUNK = 500;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Signals outlive account deletion with user_id set to NULL (migration 0012).
+// The leaf format is frozen with a string userId, so a signal whose account was
+// deleted before it was anchored carries this fixed placeholder instead.
+const DELETED_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 
 type LeafRow = {
   id: string;
-  user_id: string;
+  user_id: string | null;
   symbol: string;
   action: string;
   confidence: string | null;
@@ -34,7 +47,7 @@ type LeafRow = {
 function toLeafFields(r: LeafRow): LeafFields {
   return {
     id: r.id,
-    userId: r.user_id,
+    userId: r.user_id ?? DELETED_ACCOUNT_ID,
     symbol: r.symbol,
     action: r.action,
     confidence: r.confidence,
@@ -55,7 +68,7 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  return withCronMonitoring('anchor-run', async () => {
     const db = createServiceClient();
 
     // 1) Compute + store roots for past days that have finalized signals and no
@@ -67,10 +80,34 @@ async function handler(request: NextRequest) {
 
     let built = 0;
     for (const day of days) {
-      const { data: rows, error: leavesErr } = await db.rpc('finalized_signal_leaves', { p_day: day });
-      if (leavesErr) throw new Error(leavesErr.message);
-      const leaves = (rows ?? []) as LeafRow[];
+      // The RPC is capped at 1000 rows per response like any PostgREST read, so
+      // it is read in pages (the function orders by id, so pages are stable). A
+      // day anchored from a truncated set would never be revisited.
+      const leaves = await readAllPages<LeafRow>((from, to) =>
+        db.rpc('finalized_signal_leaves', { p_day: day }).range(from, to)
+      );
       if (leaves.length === 0) continue;
+
+      // Guard: the tree must cover EVERY finalized signal of that day. Refuse to
+      // write an anchor row from a short read; the day is retried next run.
+      const dayStart = new Date(`${day}T00:00:00.000Z`);
+      const { count, error: countErr } = await db
+        .from('signals')
+        .select('id', { count: 'exact', head: true })
+        .not('outcome', 'is', null)
+        .neq('outcome', 'pending')
+        .gte('evaluated_at', dayStart.toISOString())
+        .lt('evaluated_at', new Date(dayStart.getTime() + DAY_MS).toISOString());
+      if (countErr) throw new Error(countErr.message);
+      if (count !== leaves.length) {
+        await reportError('cron.anchor-run.leaf-count', new Error('leaf read does not match finalized signal count; day not anchored'), {
+          route: '/api/anchor/run',
+          day,
+          leaves: leaves.length,
+          finalized: count,
+        });
+        continue;
+      }
 
       const canon = leaves.map(r => canonicalizeLeaf(toLeafFields(r)));
       const leafHashes = canon.map(hashLeaf);
@@ -97,7 +134,11 @@ async function handler(request: NextRequest) {
         leaf_hash: leafHashes[i],
         canonical: canon[i],
       }));
-      const { error: lErr } = await db.from('signal_leaves').insert(leafInserts);
+      let lErr: { message: string } | null = null;
+      for (const part of chunk(leafInserts, LEAF_INSERT_CHUNK)) {
+        ({ error: lErr } = await db.from('signal_leaves').insert(part));
+        if (lErr) break;
+      }
       if (lErr) {
         // Roll back the anchor row (FK cascade removes any partial leaves) so the
         // day has no anchor marker and is retried cleanly next run — never a
@@ -110,31 +151,53 @@ async function handler(request: NextRequest) {
 
     // 2) Submit pending days on-chain (if configured). Off-chain-only otherwise.
     let anchored = 0;
+    let sendFailures = 0;
     if (isAnchoringEnabled()) {
-      const { data: pending } = await db
+      const { data: pending, error: pendingErr } = await db
         .from('signal_anchors')
         .select('day, merkle_root')
         .eq('status', 'pending')
         .is('tx_hash', null)
         .order('day', { ascending: true })
         .limit(MAX_DAYS_PER_RUN);
+      if (pendingErr) throw new Error(pendingErr.message);
 
       for (const a of pending ?? []) {
         const res = await sendAnchor(anchorDayKey(a.day), a.merkle_root as `0x${string}`);
-        if (!res) continue; // send failed → stays pending, retried next run
-        await db
+        if (!res) {
+          // Send failed → stays pending, retried next run. Recorded (no alert per
+          // day) so a chain/RPC outage is visible in error_events.
+          sendFailures += 1;
+          continue;
+        }
+        const { error: confirmErr } = await db
           .from('signal_anchors')
           .update({ tx_hash: res.txHash, block_number: Number(res.blockNumber), status: 'confirmed' })
           .eq('day', a.day);
+        if (confirmErr) {
+          // The root IS on-chain but the row still says pending — the next run
+          // would re-send it. Alert so the row can be reconciled by hand.
+          await reportError('cron.anchor-run.confirm', confirmErr, {
+            route: '/api/anchor/run',
+            day: a.day,
+            blockNumber: res.blockNumber,
+          });
+          continue;
+        }
         anchored += 1;
+      }
+      if (sendFailures > 0) {
+        await reportError('cron.anchor-run.send', new Error(`${sendFailures} anchor transaction(s) failed; days stay pending`), {
+          route: '/api/anchor/run',
+          level: 'warn',
+          alert: false,
+          sendFailures,
+        });
       }
     }
 
-    return NextResponse.json({ ok: true, built, anchored, chain: isAnchoringEnabled() });
-  } catch (error) {
-    console.error('Anchor run error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+    return NextResponse.json({ ok: true, built, anchored, sendFailures, chain: isAnchoringEnabled() });
+  });
 }
 
 export async function GET(request: NextRequest) {

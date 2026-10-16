@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createServiceClient } from '@/lib/supabase/server';
+import { reportError } from '@/lib/server/report-error';
+import { isEffectivePro, resolveStripePriceId } from '@/lib/subscription-rules';
+import { rateLimit } from '@/lib/server/rate-limit';
+import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -11,20 +15,14 @@ function getStripe() {
   });
 }
 
-// Only allow checkout for price ids we actually sell — stops a client from
-// attaching an arbitrary (e.g. $0) price. Skipped only if no price ids are
-// configured (local dev), never in a properly-configured deployment.
-function allowedPriceIds(): string[] {
-  return [
-    process.env.NEXT_PUBLIC_STRIPE_PRO_PRICE_ID,
-    process.env.NEXT_PUBLIC_STRIPE_ENTERPRISE_PRICE_ID,
-  ].filter(Boolean) as string[];
-}
+const DEFAULT_SUCCESS_PATH = '/subscription/success?session_id={CHECKOUT_SESSION_ID}';
+const DEFAULT_CANCEL_PATH = '/pricing';
 
 export async function POST(request: NextRequest) {
   try {
     // Identity comes from the verified session, NEVER the request body — the
-    // webhook trusts metadata.userId to grant Pro, so it must be authentic.
+    // webhook trusts metadata.userId / client_reference_id to grant Pro, so it
+    // must be authentic.
     const header = request.headers.get('authorization');
     if (!header?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -36,14 +34,61 @@ export async function POST(request: NextRequest) {
     }
     const user = userData.user;
 
-    const { priceId, successUrl, cancelUrl, billingInterval } = await request.json();
-    if (!priceId) {
-      return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
+    // Every call creates a Stripe Checkout Session on our API key.
+    const rl = await rateLimit('stripe-checkout', user.id, 5, 60);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+      );
     }
 
-    const allowed = allowedPriceIds();
-    if (allowed.length > 0 && !allowed.includes(priceId)) {
-      return NextResponse.json({ error: 'Invalid price' }, { status: 400 });
+    const body = await request.json().catch(() => null);
+    const plan = body?.plan;
+    const interval = body?.interval;
+    if (plan !== 'pro') {
+      // The profiles table can only hold free | pro | cancelled, so no other tier
+      // is sellable — refuse rather than take money for a plan we can't grant.
+      return NextResponse.json({ error: 'Plan not available' }, { status: 400 });
+    }
+    if (interval !== 'monthly' && interval !== 'yearly') {
+      return NextResponse.json({ error: 'Invalid billing interval' }, { status: 400 });
+    }
+
+    // Price is derived SERVER-SIDE from plan + interval; a client-supplied price
+    // id is never accepted (it could point at a cheaper or $0 price).
+    const priceId = resolveStripePriceId(plan, interval, process.env);
+    if (!priceId) {
+      await reportError('stripe.checkout', new Error(`Stripe price for pro/${interval} is not configured`), { route: '/api/stripe/checkout' });
+      return NextResponse.json({ error: 'Plan not available' }, { status: 503 });
+    }
+
+    // Return URLs must stay on our own site (Stripe redirects the user there).
+    // Anything else falls back to the default pages on the trusted origin.
+    const origin = trustedAppOrigin(process.env.NEXT_PUBLIC_APP_URL, request.url);
+    const successUrl =
+      sameOriginUrl(body?.successUrl, origin) ?? `${origin}${DEFAULT_SUCCESS_PATH}`;
+    const cancelUrl = sameOriginUrl(body?.cancelUrl, origin) ?? `${origin}${DEFAULT_CANCEL_PATH}`;
+
+    // Don't sell a card subscription to anyone who is already Pro: a card
+    // subscriber belongs in the billing portal, and a crypto Pro's paid period
+    // would be overwritten by the card plan (card checkout opens once it lapses).
+    // Fail closed if the plan can't be read.
+    const { data: profile, error: profileErr } = await db
+      .from('profiles')
+      .select('subscription_status, plan_id, current_period_end')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profileErr) throw new Error(profileErr.message);
+    if (
+      profile &&
+      isEffectivePro({
+        status: profile.subscription_status,
+        planId: profile.plan_id,
+        currentPeriodEnd: profile.current_period_end,
+      })
+    ) {
+      return NextResponse.json({ error: 'Already subscribed' }, { status: 409 });
     }
 
     const stripe = getStripe();
@@ -53,22 +98,23 @@ export async function POST(request: NextRequest) {
       mode: 'subscription',
       success_url: successUrl,
       cancel_url: cancelUrl,
+      client_reference_id: user.id,
       customer_email: user.email ?? undefined,
       metadata: {
         userId: user.id,
-        billingInterval,
+        billingInterval: interval,
       },
       subscription_data: {
         metadata: {
           userId: user.id,
-          billingInterval,
+          billingInterval: interval,
         },
       },
     });
 
-    return NextResponse.json({ sessionId: session.id });
+    return NextResponse.json({ sessionId: session.id, url: session.url });
   } catch (error) {
-    console.error('Stripe checkout error:', error);
+    await reportError('stripe.checkout', error, { route: '/api/stripe/checkout' });
     return NextResponse.json(
       { error: 'Failed to create checkout session' },
       { status: 500 }

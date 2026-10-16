@@ -1,4 +1,4 @@
--- CryptoSuccess — all migrations 0001→0008 combined. Paste into Supabase SQL Editor and Run.
+-- CryptoSuccess — all migrations 0001→0014 combined. Paste into Supabase SQL Editor and Run.
 -- GENERATED from supabase/migrations/*.sql — do not edit by hand; regenerate when a migration is added.
 
 
@@ -558,10 +558,10 @@ grant execute on function public.unanchored_signal_days()      to service_role;
 -- ============================================================
 -- 0006_crypto_payments.sql
 -- ============================================================
--- Crypto payments (Coinbase Commerce) webhook idempotency.
+-- Crypto payments (NOWPayments) webhook idempotency.
 -- Run in the Supabase SQL editor after 0005.
 --
--- Coinbase Commerce retries webhook deliveries; persist processed event ids so a
+-- The crypto payment provider retries webhook (IPN) deliveries; persist processed event ids so a
 -- retry is a no-op. RLS on with no policy → only the service-role webhook can
 -- touch it (same pattern as processed_stripe_events in 0003).
 create table if not exists public.processed_crypto_events (
@@ -791,4 +791,1251 @@ $$;
 
 revoke all on function public.consume_telegram_signal(bigint) from public, anon, authenticated;
 grant execute on function public.consume_telegram_signal(bigint) to service_role;
+
+
+-- ============================================================
+-- 0009_security_hardening.sql
+-- ============================================================
+-- Security + data-integrity hardening.
+-- Run in the Supabase SQL editor after 0008, BEFORE deploying the matching code
+-- (POST /api/signals/record refunds via refund_signal, /api/subscriptions/expire
+-- calls expire_crypto_subscriptions, the paper-account service calls
+-- reset_paper_balance). Idempotent: safe to re-run.
+--
+-- What it closes:
+--   1. Track-record forgery: clients could INSERT a signals row with outcome /
+--      evaluated_at / profit_loss_percent / created_at already filled in, and the
+--      anchoring job would put that fabricated call on-chain. Signals are now
+--      written ONLY by the server (/api/signals/record, Telegram bot), which sets
+--      timestamps and the entry price itself.
+--   2. Refunds: a credit consumed for a signal that then failed to save is given
+--      back (refund_signal).
+--   3. Crypto Pro never expired: one-off crypto payments set a period end that
+--      nothing enforced. consume_signal now treats an expired crypto Pro as free
+--      (and downgrades it), and a cron downgrades all of them.
+--   4. Paper cash: clients could UPDATE their own paper_accounts row to any
+--      balance. Balances now change only through SECURITY DEFINER functions.
+
+-- ───────────────────────────────────── 1. Signals: server-only inserts ──────
+-- With RLS enabled and no INSERT policy, anon/authenticated inserts are denied;
+-- the service-role key bypasses RLS. (UPDATE was already removed in 0004.)
+drop policy if exists "signals_insert_own" on public.signals;
+
+-- Belt and braces: even if an INSERT policy is re-added later, refuse any insert
+-- that does not come from the service role.
+create or replace function public.protect_signal_insert()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'Signals are recorded by the server only';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.protect_signal_insert() from public, anon, authenticated;
+
+drop trigger if exists protect_signal_insert on public.signals;
+create trigger protect_signal_insert
+  before insert on public.signals
+  for each row execute function public.protect_signal_insert();
+
+-- ───────────────────────────── 3. consume_signal: crypto Pro expiry ─────────
+-- Same contract as 0003 (allowed / remaining; Pro → remaining -1), plus: a 'pro'
+-- on a one-off crypto plan whose current_period_end has passed is downgraded to
+-- free in the same transaction and metered as a free user.
+create or replace function public.consume_signal(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  prof      record;
+  did_reset boolean;
+  used      int;
+begin
+  select subscription_status, plan_id, current_period_end,
+         signals_used_today, last_reset_date, total_signals_viewed
+    into prof
+    from public.profiles
+    where id = p_uid
+    for update;                       -- row lock → atomic against concurrent calls
+
+  if not found then
+    return jsonb_build_object('allowed', false, 'remaining', 0);
+  end if;
+
+  if prof.subscription_status = 'pro' then
+    if left(coalesce(prof.plan_id, ''), 7) = 'crypto_'
+       and (prof.current_period_end is null or prof.current_period_end < now()) then
+      -- Fixed crypto period is over → back to free, then meter below.
+      update public.profiles
+        set subscription_status = 'free', plan_id = null
+        where id = p_uid;
+    else
+      -- Pro = unlimited; never increments the counter.
+      return jsonb_build_object('allowed', true, 'remaining', -1);
+    end if;
+  end if;
+
+  -- UTC calendar-day reset.
+  did_reset := (prof.last_reset_date at time zone 'utc')::date
+               < (now() at time zone 'utc')::date;
+  used := case when did_reset then 0 else prof.signals_used_today end;
+
+  -- Free tier: 5/day. At the cap, persist the reset (if any) but don't grant.
+  if used >= 5 then
+    if did_reset then
+      update public.profiles
+        set signals_used_today = 0, last_reset_date = now()
+        where id = p_uid;
+    end if;
+    return jsonb_build_object('allowed', false, 'remaining', 0);
+  end if;
+
+  update public.profiles
+    set signals_used_today  = used + 1,
+        last_reset_date      = case when did_reset then now() else last_reset_date end,
+        total_signals_viewed = coalesce(total_signals_viewed, 0) + 1
+    where id = p_uid;
+
+  return jsonb_build_object('allowed', true, 'remaining', 5 - (used + 1));
+end;
+$$;
+
+revoke all on function public.consume_signal(uuid) from public, anon, authenticated;
+grant execute on function public.consume_signal(uuid) to service_role;
+
+-- ─────────────────────────────────────────── 2. refund_signal ───────────────
+-- Gives back one credit consumed by consume_signal when the signal could not be
+-- saved. Never below 0, only for today's UTC counter (a refund arriving after
+-- midnight must not eat into the fresh allowance), no-op for Pro.
+create or replace function public.refund_signal(p_uid uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  prof record;
+begin
+  select subscription_status, plan_id, current_period_end,
+         signals_used_today, last_reset_date
+    into prof
+    from public.profiles
+    where id = p_uid
+    for update;
+
+  if not found then
+    return jsonb_build_object('refunded', false, 'remaining', 0);
+  end if;
+
+  if prof.subscription_status = 'pro'
+     and not (left(coalesce(prof.plan_id, ''), 7) = 'crypto_'
+              and (prof.current_period_end is null or prof.current_period_end < now())) then
+    return jsonb_build_object('refunded', false, 'remaining', -1);
+  end if;
+
+  if (prof.last_reset_date at time zone 'utc')::date <> (now() at time zone 'utc')::date then
+    -- Counter belongs to an earlier UTC day: today's allowance is already full.
+    return jsonb_build_object('refunded', false, 'remaining', 5);
+  end if;
+
+  if prof.signals_used_today <= 0 then
+    return jsonb_build_object('refunded', false, 'remaining', 5);
+  end if;
+
+  update public.profiles
+    set signals_used_today = prof.signals_used_today - 1,
+        total_signals_viewed = greatest(coalesce(total_signals_viewed, 0) - 1, 0)
+    where id = p_uid;
+
+  return jsonb_build_object('refunded', true,
+                            'remaining', greatest(5 - (prof.signals_used_today - 1), 0));
+end;
+$$;
+
+revoke all on function public.refund_signal(uuid) from public, anon, authenticated;
+grant execute on function public.refund_signal(uuid) to service_role;
+
+-- ─────────────────────────────── 3b. Expire lapsed crypto subscriptions ─────
+-- Called by the /api/subscriptions/expire cron. Returns how many were downgraded.
+create or replace function public.expire_crypto_subscriptions()
+returns int language plpgsql security definer set search_path = public as $$
+declare
+  n int;
+begin
+  update public.profiles
+    set subscription_status = 'free', plan_id = null
+    where subscription_status = 'pro'
+      and left(coalesce(plan_id, ''), 7) = 'crypto_'
+      and (current_period_end is null or current_period_end < now());
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+revoke all on function public.expire_crypto_subscriptions() from public, anon, authenticated;
+grant execute on function public.expire_crypto_subscriptions() to service_role;
+
+-- ─────────────────────────────────────── 4. Paper cash integrity ────────────
+-- Clients keep SELECT on their own row; every balance change goes through
+-- adjust_paper_balance (0001, overdraft-guarded, creates the row on first use) or
+-- reset_paper_balance below.
+drop policy if exists "paper_accounts_insert_own" on public.paper_accounts;
+drop policy if exists "paper_accounts_update_own" on public.paper_accounts;
+drop policy if exists "paper_accounts_delete_own" on public.paper_accounts;
+
+-- Reset the signed-in user's paper cash to the starting balance.
+create or replace function public.reset_paper_balance()
+returns numeric language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then raise exception 'Not authenticated'; end if;
+  insert into public.paper_accounts (user_id, balance_usd, updated_at)
+    values (uid, 10000, now())
+  on conflict (user_id) do update
+    set balance_usd = 10000, updated_at = now();
+  return 10000;
+end;
+$$;
+
+revoke all on function public.reset_paper_balance() from public, anon;
+grant execute on function public.reset_paper_balance() to authenticated;
+
+-- adjust_paper_balance was granted to authenticated in 0001 but never revoked
+-- from PUBLIC/anon (it raises for anon anyway; make the grant explicit).
+revoke all on function public.adjust_paper_balance(numeric) from public, anon;
+grant execute on function public.adjust_paper_balance(numeric) to authenticated;
+
+
+-- ============================================================
+-- 0010_telegram_phase2.sql
+-- ============================================================
+-- Telegram bot phase 2: credit refunds, chat personalization, scheduled pushes
+-- and accountability follow-ups. Run in the Supabase SQL editor after 0008.
+-- Idempotent: safe to re-run.
+--
+-- Same security model as 0007: every table has RLS enabled with NO client
+-- policies (only the service-role bot/cron code can touch them), and every
+-- function is SECURITY DEFINER, pinned to search_path = public, and executable
+-- by service_role only. Nothing here depends on functions from other new
+-- migrations.
+
+-- ─────────────────────────────────── Chat preferences ──────────────────────
+create table if not exists public.telegram_prefs (
+  telegram_id    bigint primary key references public.telegram_users(telegram_id) on delete cascade,
+  risk_level     text not null default 'medium',
+  coins          text[] not null default '{BTC,ETH}',
+  alerts_enabled boolean not null default false,
+  last_push_at   timestamptz,
+  updated_at     timestamptz not null default now()
+);
+
+-- Constraints are added separately (drop + add) so a re-run converges.
+alter table public.telegram_prefs drop constraint if exists telegram_prefs_risk_level_check;
+alter table public.telegram_prefs add constraint telegram_prefs_risk_level_check
+  check (risk_level in ('low', 'medium', 'high'));
+
+-- 1–5 upper-case ticker symbols. Membership in the app's coin catalogue is
+-- validated in code (src/lib/coins.ts is the single source of truth).
+alter table public.telegram_prefs drop constraint if exists telegram_prefs_coins_check;
+alter table public.telegram_prefs add constraint telegram_prefs_coins_check
+  check (
+    cardinality(coins) between 1 and 5
+    and array_to_string(coins, ',') ~ '^[A-Z0-9]{2,12}(,[A-Z0-9]{2,12}){0,4}$'
+  );
+
+-- The push cron scans only chats with alerts on.
+create index if not exists telegram_prefs_alerts_idx
+  on public.telegram_prefs (last_push_at)
+  where alerts_enabled;
+
+alter table public.telegram_prefs enable row level security;
+
+-- ─────────────────────────────────── Follow-up ledger ──────────────────────
+-- One row per signal whose outcome message has been sent (or claimed for
+-- sending). The primary key makes "send once" race-safe across cron runs.
+create table if not exists public.telegram_followups (
+  signal_id   uuid primary key references public.signals(id) on delete cascade,
+  telegram_id bigint not null references public.telegram_users(telegram_id) on delete cascade,
+  sent_at     timestamptz not null default now()
+);
+
+create index if not exists telegram_followups_telegram_id_idx on public.telegram_followups (telegram_id);
+
+alter table public.telegram_followups enable row level security;
+
+-- The follow-up cron selects recently finalized Telegram-originated calls; keep
+-- that scan cheap without indexing every web signal.
+create index if not exists idx_signals_telegram_evaluated
+  on public.signals (evaluated_at)
+  where reasoning like 'Telegram analyst read%';
+
+-- ─────────────────────────────────── Save preferences ──────────────────────
+-- Upserts a chat's preferences; a NULL argument leaves that field unchanged.
+-- Ensures the telegram_users row exists first (the FK parent), so it works even
+-- for a chat whose first-contact upsert hasn't landed yet.
+create or replace function public.save_telegram_prefs(
+  p_telegram_id    bigint,
+  p_risk_level     text,
+  p_coins          text[],
+  p_alerts_enabled boolean
+)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.telegram_users (telegram_id) values (p_telegram_id)
+    on conflict (telegram_id) do nothing;
+
+  insert into public.telegram_prefs (telegram_id, risk_level, coins, alerts_enabled, updated_at)
+    values (
+      p_telegram_id,
+      coalesce(p_risk_level, 'medium'),
+      coalesce(p_coins, '{BTC,ETH}'::text[]),
+      coalesce(p_alerts_enabled, false),
+      now()
+    )
+  on conflict (telegram_id) do update
+    set risk_level     = coalesce(p_risk_level, public.telegram_prefs.risk_level),
+        coins          = coalesce(p_coins, public.telegram_prefs.coins),
+        alerts_enabled = coalesce(p_alerts_enabled, public.telegram_prefs.alerts_enabled),
+        updated_at     = now();
+end;
+$$;
+
+-- ─────────────────────────────────── Refund a signal credit (N14) ──────────
+-- Gives back one credit consumed by consume_telegram_signal when the analyst
+-- read could not be produced. Mirrors its routing:
+--   • linked chat   → the account's shared allowance on profiles (0003/0008);
+--                     Pro is unlimited and never incremented, so never refunded.
+--   • unlinked chat → the chat's own counter on telegram_users.
+-- Only refunds within the same UTC day as the counter (after a day rollover the
+-- counter is effectively 0 already) and never below 0. Row locks match the
+-- consume functions, so a refund can't race a concurrent consume.
+create or replace function public.refund_telegram_signal(p_telegram_id bigint)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  tu    record;
+  prof  record;
+  today date := (now() at time zone 'utc')::date;
+begin
+  select * into tu from public.telegram_users
+    where telegram_id = p_telegram_id
+    for update;
+
+  if not found then
+    return jsonb_build_object('refunded', false, 'reason', 'unknown_chat');
+  end if;
+
+  if tu.user_id is not null then
+    select subscription_status, signals_used_today, last_reset_date
+      into prof
+      from public.profiles
+      where id = tu.user_id
+      for update;
+
+    if not found then
+      return jsonb_build_object('refunded', false, 'reason', 'no_profile');
+    end if;
+    if prof.subscription_status = 'pro' then
+      return jsonb_build_object('refunded', false, 'reason', 'unlimited');
+    end if;
+    if (prof.last_reset_date at time zone 'utc')::date <> today or prof.signals_used_today <= 0 then
+      return jsonb_build_object('refunded', false, 'reason', 'nothing_to_refund');
+    end if;
+
+    update public.profiles
+      set signals_used_today   = greatest(signals_used_today - 1, 0),
+          total_signals_viewed = greatest(coalesce(total_signals_viewed, 0) - 1, 0)
+      where id = tu.user_id;
+    return jsonb_build_object('refunded', true, 'linked', true);
+  end if;
+
+  if (tu.last_reset_date at time zone 'utc')::date <> today or tu.signals_used_today <= 0 then
+    return jsonb_build_object('refunded', false, 'reason', 'nothing_to_refund');
+  end if;
+
+  update public.telegram_users
+    set signals_used_today = greatest(signals_used_today - 1, 0),
+        updated_at         = now()
+    where telegram_id = p_telegram_id;
+  return jsonb_build_object('refunded', true, 'linked', false);
+end;
+$$;
+
+-- Defense in depth on top of RLS-without-policies: no direct table grants for
+-- client roles either.
+revoke all on table public.telegram_prefs     from anon, authenticated;
+revoke all on table public.telegram_followups from anon, authenticated;
+
+-- Only the server (service-role) may call these; clients must not self-serve.
+revoke all on function public.save_telegram_prefs(bigint, text, text[], boolean) from public, anon, authenticated;
+revoke all on function public.refund_telegram_signal(bigint)                     from public, anon, authenticated;
+grant execute on function public.save_telegram_prefs(bigint, text, text[], boolean) to service_role;
+grant execute on function public.refund_telegram_signal(bigint)                     to service_role;
+
+
+-- ============================================================
+-- 0011_ops_monitoring.sql
+-- ============================================================
+-- Ops monitoring: server error log, cron run history and alert throttling.
+-- Run in the Supabase SQL editor before (or with) the deploy that ships
+-- src/lib/server/report-error.ts + cron-monitor.ts. The app degrades gracefully
+-- without it (writes are best effort and only logged on failure), but
+-- GET /api/ops/status needs these tables to report anything.
+--
+-- Same lock-down pattern as 0003/0007: RLS enabled with NO policies, table
+-- privileges revoked from anon/authenticated, functions SECURITY DEFINER and
+-- executable by service_role only. Only the server's service-role client can
+-- read or write any of this. Idempotent: safe to re-run.
+
+-- ─────────────────────────────────── Error events ──────────────────────────
+-- Written by reportError(). Messages/details are scrubbed of secrets and PII
+-- in the app before insert; the length checks are a backstop.
+create table if not exists public.error_events (
+  id         uuid primary key default gen_random_uuid(),
+  context    text not null check (char_length(context) between 1 and 64),
+  message    text not null check (char_length(message) <= 1000),
+  details    jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists error_events_created_at_idx
+  on public.error_events (created_at desc);
+create index if not exists error_events_context_created_at_idx
+  on public.error_events (context, created_at desc);
+
+alter table public.error_events enable row level security;
+revoke all on table public.error_events from anon, authenticated;
+
+-- ─────────────────────────────────── Cron runs ─────────────────────────────
+-- One row per cron invocation (withCronMonitoring). finished_at/ok stay null
+-- while running; a row that never finishes means the function was killed.
+create table if not exists public.cron_runs (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null check (char_length(name) between 1 and 64),
+  started_at  timestamptz not null default now(),
+  finished_at timestamptz,
+  ok          boolean,
+  summary     jsonb not null default '{}'::jsonb,
+  error       text check (error is null or char_length(error) <= 1000)
+);
+
+create index if not exists cron_runs_name_started_at_idx
+  on public.cron_runs (name, started_at desc);
+-- Fast "last successful run" lookup per job.
+create index if not exists cron_runs_name_ok_started_at_idx
+  on public.cron_runs (name, started_at desc) where ok;
+create index if not exists cron_runs_started_at_idx
+  on public.cron_runs (started_at);
+
+alter table public.cron_runs enable row level security;
+revoke all on table public.cron_runs from anon, authenticated;
+
+-- ─────────────────────────────────── Alert throttle ────────────────────────
+-- Last admin alert per error context, so a burst of identical failures across
+-- many serverless instances produces one Telegram message, not hundreds.
+create table if not exists public.alert_throttle (
+  context      text primary key check (char_length(context) between 1 and 64),
+  last_sent_at timestamptz not null default now()
+);
+
+alter table public.alert_throttle enable row level security;
+revoke all on table public.alert_throttle from anon, authenticated;
+
+-- Atomically claim the right to alert for `p_context`: true when no alert was
+-- sent within the last `p_window_seconds` (and records now() as the send time),
+-- false otherwise. The conditional upsert makes concurrent callers race-safe —
+-- exactly one of them wins a slot.
+create or replace function public.claim_alert_slot(p_context text, p_window_seconds int)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare
+  claimed  text;
+  v_window int := greatest(coalesce(p_window_seconds, 600), 60);
+begin
+  if p_context is null or char_length(p_context) = 0 or char_length(p_context) > 64 then
+    return false;
+  end if;
+
+  insert into public.alert_throttle as t (context, last_sent_at)
+    values (p_context, now())
+  on conflict (context) do update
+    set last_sent_at = now()
+    where t.last_sent_at < now() - make_interval(secs => v_window)
+  returning t.context into claimed;
+
+  return claimed is not null;
+end;
+$$;
+
+-- ─────────────────────────────────── Retention ─────────────────────────────
+-- Deletes error events / cron runs older than the retention window (default 30
+-- days, clamped to 7..365 so a bad argument can't wipe recent history) and
+-- stale throttle rows. Called daily by the /api/ops/prune cron.
+create or replace function public.prune_ops_events(p_retention_days int default 30)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_days     int := least(greatest(coalesce(p_retention_days, 30), 7), 365);
+  cutoff     timestamptz := now() - make_interval(days => v_days);
+  n_errors   int;
+  n_runs     int;
+  n_throttle int;
+begin
+  delete from public.error_events where created_at < cutoff;
+  get diagnostics n_errors = row_count;
+
+  delete from public.cron_runs where started_at < cutoff;
+  get diagnostics n_runs = row_count;
+
+  delete from public.alert_throttle where last_sent_at < now() - interval '1 day';
+  get diagnostics n_throttle = row_count;
+
+  return jsonb_build_object(
+    'retentionDays', v_days,
+    'errorEvents', n_errors,
+    'cronRuns', n_runs,
+    'alertThrottle', n_throttle
+  );
+end;
+$$;
+
+-- Only the server (service-role) may call these.
+revoke all on function public.claim_alert_slot(text, int)  from public, anon, authenticated;
+revoke all on function public.prune_ops_events(int)        from public, anon, authenticated;
+grant execute on function public.claim_alert_slot(text, int) to service_role;
+grant execute on function public.prune_ops_events(int)       to service_role;
+
+
+-- ============================================================
+-- 0012_integrity_hardening.sql
+-- ============================================================
+-- Integrity hardening, round two.
+-- Run in the Supabase SQL editor after 0011, BEFORE deploying the matching code
+-- (the futures page calls /api/paper/futures/*, the staking page calls
+-- stake_position / unstake_position, the paper-account service calls
+-- ensure_paper_account). Idempotent: safe to re-run.
+--
+-- What it closes:
+--   1. Free-tier quota bypass: profiles_update_own let a signed-in user write
+--      signals_used_today / last_reset_date / total_signals_viewed on their own
+--      row, which reset the counter consume_signal meters against. Those columns
+--      are now server-managed, and clients can only UPDATE the profile columns
+--      the app actually edits.
+--   2. Paper cash minting: adjust_paper_balance accepted any delta from any
+--      signed-in user, and staking / futures rows (whose amounts drive payouts)
+--      were client-editable. Cash now moves only inside purpose-built functions
+--      that derive the amount from a row the client cannot touch, and a reset
+--      also closes open positions so principal can't be recycled.
+--   3. Account deletion vs. the public record: signals cascaded away with the
+--      auth user, which removed scored (and anchored) calls from the record and
+--      broke inclusion proofs for every other signal anchored that day. Signals
+--      now outlive the account with user_id set to NULL; the anchored leaf keeps
+--      the old random id, which no longer points at anyone.
+
+-- ─────────────────────────────── 1. Profiles: server-managed columns ────────
+-- Same trigger name/function as 0001, now also guarding the quota counters and
+-- the identity columns. consume_signal / refund_signal / the webhooks run as
+-- service_role and are unaffected.
+create or replace function public.protect_subscription_columns()
+returns trigger language plpgsql set search_path = public as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    if new.subscription_status is distinct from old.subscription_status
+       or new.plan_id is distinct from old.plan_id
+       or new.customer_id is distinct from old.customer_id
+       or new.current_period_end is distinct from old.current_period_end then
+      raise exception 'Subscription fields are server-managed';
+    end if;
+    if new.signals_used_today is distinct from old.signals_used_today
+       or new.last_reset_date is distinct from old.last_reset_date
+       or new.total_signals_viewed is distinct from old.total_signals_viewed then
+      raise exception 'Signal allowance fields are server-managed';
+    end if;
+    if new.id is distinct from old.id
+       or new.email is distinct from old.email
+       or new.created_at is distinct from old.created_at then
+      raise exception 'Account identity fields are server-managed';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_subscription on public.profiles;
+create trigger protect_subscription
+  before update on public.profiles
+  for each row execute function public.protect_subscription_columns();
+
+-- Belt and braces: column-level privileges. The owner UPDATE policy stays (RLS
+-- still limits it to the caller's own row), but only these columns can be named
+-- in a client UPDATE. Keep this list in sync with the client writers:
+-- auth.service (notifications, last_login), lib/watchlist (watchlist),
+-- portfolio.service (portfolio_summary), plus display_name / photo_url /
+-- timezone for profile edits.
+revoke update on table public.profiles from anon, authenticated;
+grant update (display_name, photo_url, notifications, timezone, watchlist, last_login, portfolio_summary)
+  on table public.profiles to authenticated;
+
+-- ─────────────────────────────────────── 2. Paper cash integrity ────────────
+-- 2a. No more client-chosen deltas.
+revoke all on function public.adjust_paper_balance(numeric) from public, anon, authenticated;
+
+-- 2b. Read-or-create the caller's account (replaces the "adjust by 0" trick).
+create or replace function public.ensure_paper_account()
+returns numeric language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+  bal numeric;
+begin
+  if uid is null then raise exception 'Not authenticated'; end if;
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (uid, 10000)
+    on conflict (user_id) do nothing;
+  select balance_usd into bal from public.paper_accounts where user_id = uid;
+  return bal;
+end;
+$$;
+
+revoke all on function public.ensure_paper_account() from public, anon;
+grant execute on function public.ensure_paper_account() to authenticated;
+
+-- 2c. Staking / futures rows are written only by the functions below (and the
+-- engine, as service_role). Clients keep SELECT on their own rows.
+drop policy if exists "staking_positions_insert_own" on public.staking_positions;
+drop policy if exists "staking_positions_update_own" on public.staking_positions;
+drop policy if exists "staking_positions_delete_own" on public.staking_positions;
+drop policy if exists "futures_positions_insert_own" on public.futures_positions;
+drop policy if exists "futures_positions_update_own" on public.futures_positions;
+drop policy if exists "futures_positions_delete_own" on public.futures_positions;
+
+-- 2d. Stake: APY comes from staking_rates (server-written), never the client.
+-- Debit + insert in one transaction, overdraft-guarded under a row lock.
+create or replace function public.stake_position(p_symbol text, p_amount numeric)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+  sym text := upper(trim(coalesce(p_symbol, '')));
+  rate numeric;
+  bal numeric;
+  new_id uuid;
+begin
+  if uid is null then raise exception 'Not authenticated'; end if;
+  if p_amount is null or p_amount <= 0 or p_amount > 1000000000 then
+    raise exception 'Enter a valid amount';
+  end if;
+
+  -- Staking is part of the Pro paper-trading suite. A lapsed one-off crypto Pro
+  -- counts as free (same rule as consume_signal). Unstaking stays open to all so
+  -- nobody's principal is ever stuck.
+  if not exists (
+    select 1 from public.profiles
+     where id = uid
+       and subscription_status = 'pro'
+       and not (left(coalesce(plan_id, ''), 7) = 'crypto_'
+                and (current_period_end is null or current_period_end < now()))
+  ) then
+    raise exception 'Staking is a Pro feature';
+  end if;
+
+  select apy into rate from public.staking_rates where symbol = sym;
+  if rate is null or rate < 0 or rate > 1000 then
+    raise exception 'Staking is not available for this coin';
+  end if;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (uid, 10000)
+    on conflict (user_id) do nothing;
+  select balance_usd into bal from public.paper_accounts where user_id = uid for update;
+  if bal < p_amount then raise exception 'Insufficient paper balance'; end if;
+
+  update public.paper_accounts
+    set balance_usd = balance_usd - p_amount, updated_at = now()
+    where user_id = uid;
+
+  insert into public.staking_positions (user_id, symbol, amount_usd, apy_snapshot, active)
+    values (uid, sym, p_amount, rate, true)
+    returning id into new_id;
+  return new_id;
+end;
+$$;
+
+revoke all on function public.stake_position(text, numeric) from public, anon;
+grant execute on function public.stake_position(text, numeric) to authenticated;
+
+-- 2e. Unstake: principal + simple-interest rewards from the row's own snapshot
+-- (same formula as accruedRewards in staking.service). Closes and credits in one
+-- transaction, only if this call made the active → closed transition.
+create or replace function public.unstake_position(p_id uuid)
+returns numeric language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+  pos record;
+  closed_ts timestamptz := now();
+  payout numeric;
+begin
+  if uid is null then raise exception 'Not authenticated'; end if;
+
+  select * into pos from public.staking_positions
+    where id = p_id and user_id = uid
+    for update;
+  if not found then raise exception 'Position not found'; end if;
+  if not pos.active then raise exception 'Already unstaked'; end if;
+
+  payout := pos.amount_usd
+          + pos.amount_usd * (pos.apy_snapshot / 100)
+            * (greatest(extract(epoch from (closed_ts - pos.started_at)), 0) / 86400.0 / 365.0);
+
+  update public.staking_positions
+    set active = false, closed_at = closed_ts
+    where id = p_id;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (uid, 10000)
+    on conflict (user_id) do nothing;
+  update public.paper_accounts
+    set balance_usd = balance_usd + payout, updated_at = now()
+    where user_id = uid;
+
+  return payout;
+end;
+$$;
+
+revoke all on function public.unstake_position(uuid) from public, anon;
+grant execute on function public.unstake_position(uuid) to authenticated;
+
+-- 2f. Futures need a live mark price, which only the server can vouch for, so
+-- these are service_role only and called by /api/paper/futures/{open,close}
+-- after the route has priced the trade itself and checked the caller's token.
+create or replace function public.open_futures_position(
+  p_uid uuid, p_symbol text, p_side text, p_leverage numeric, p_entry numeric,
+  p_quantity numeric, p_margin numeric, p_liquidation numeric
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  bal numeric;
+  new_id uuid;
+begin
+  if p_uid is null then raise exception 'Missing user'; end if;
+  if p_side not in ('long', 'short') then raise exception 'Invalid side'; end if;
+  if p_leverage is null or p_leverage < 1 or p_leverage > 20 then raise exception 'Invalid leverage'; end if;
+  if p_margin is null or p_margin <= 0 or p_margin > 1000000000 then raise exception 'Invalid margin'; end if;
+  if p_entry is null or p_entry <= 0 or p_quantity is null or p_quantity <= 0
+     or p_liquidation is null or p_liquidation <= 0 then
+    raise exception 'Invalid position numbers';
+  end if;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (p_uid, 10000)
+    on conflict (user_id) do nothing;
+  select balance_usd into bal from public.paper_accounts where user_id = p_uid for update;
+  if bal < p_margin then raise exception 'Insufficient paper balance'; end if;
+
+  update public.paper_accounts
+    set balance_usd = balance_usd - p_margin, updated_at = now()
+    where user_id = p_uid;
+
+  insert into public.futures_positions (
+    user_id, symbol, side, leverage, entry_price, quantity, margin_usd,
+    margin_mode, liquidation_price, status
+  ) values (
+    p_uid, upper(p_symbol), p_side, p_leverage, p_entry, p_quantity, p_margin,
+    'isolated', p_liquidation, 'open'
+  ) returning id into new_id;
+  return new_id;
+end;
+$$;
+
+revoke all on function public.open_futures_position(uuid, text, text, numeric, numeric, numeric, numeric, numeric)
+  from public, anon, authenticated;
+grant execute on function public.open_futures_position(uuid, text, text, numeric, numeric, numeric, numeric, numeric)
+  to service_role;
+
+-- PnL is computed here from the locked row (same formula as computePnl in
+-- src/lib/futures.ts); the payout never goes below zero (isolated margin).
+create or replace function public.close_futures_position(p_uid uuid, p_id uuid, p_mark numeric)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  pos record;
+  pnl numeric;
+  credit numeric;
+begin
+  if p_uid is null or p_id is null then raise exception 'Missing arguments'; end if;
+  if p_mark is null or p_mark <= 0 then raise exception 'Invalid mark price'; end if;
+
+  select * into pos from public.futures_positions
+    where id = p_id and user_id = p_uid
+    for update;
+  if not found then
+    return jsonb_build_object('closed', false, 'reason', 'not_found');
+  end if;
+  if pos.status <> 'open' then
+    return jsonb_build_object('closed', false, 'reason', 'not_open', 'status', pos.status);
+  end if;
+
+  pnl := case when pos.side = 'long'
+              then (p_mark - pos.entry_price) * pos.quantity
+              else (pos.entry_price - p_mark) * pos.quantity end;
+  credit := greatest(0, pos.margin_usd + pnl);
+
+  update public.futures_positions
+    set status = 'closed', close_price = p_mark, realized_pnl = pnl, closed_at = now()
+    where id = p_id;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (p_uid, 10000)
+    on conflict (user_id) do nothing;
+  update public.paper_accounts
+    set balance_usd = balance_usd + credit, updated_at = now()
+    where user_id = p_uid;
+
+  return jsonb_build_object('closed', true, 'realized_pnl', pnl, 'credit', credit);
+end;
+$$;
+
+revoke all on function public.close_futures_position(uuid, uuid, numeric) from public, anon, authenticated;
+grant execute on function public.close_futures_position(uuid, uuid, numeric) to service_role;
+
+-- 2g. Reset now forfeits open stakes and futures in the same transaction, so
+-- "stake everything, reset, unstake" can no longer mint cash.
+create or replace function public.reset_paper_balance()
+returns numeric language plpgsql security definer set search_path = public as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then raise exception 'Not authenticated'; end if;
+
+  update public.staking_positions
+    set active = false, closed_at = now()
+    where user_id = uid and active;
+  update public.futures_positions
+    set status = 'closed', closed_at = now(), close_price = null, realized_pnl = null
+    where user_id = uid and status = 'open';
+
+  insert into public.paper_accounts (user_id, balance_usd, updated_at)
+    values (uid, 10000, now())
+  on conflict (user_id) do update
+    set balance_usd = 10000, updated_at = now();
+  return 10000;
+end;
+$$;
+
+revoke all on function public.reset_paper_balance() from public, anon;
+grant execute on function public.reset_paper_balance() to authenticated;
+
+-- ─────────────────────────────── 3. Signals outlive account deletion ────────
+alter table public.signals alter column user_id drop not null;
+alter table public.signals drop constraint if exists signals_user_id_fkey;
+alter table public.signals
+  add constraint signals_user_id_fkey
+  foreign key (user_id) references auth.users(id) on delete set null;
+
+-- An anchored leaf must never disappear: refuse to delete a signal that has one.
+alter table public.signal_leaves drop constraint if exists signal_leaves_signal_id_fkey;
+alter table public.signal_leaves
+  add constraint signal_leaves_signal_id_fkey
+  foreign key (signal_id) references public.signals(id) on delete restrict;
+
+-- The 0004 immutability trigger blocks every non-service_role UPDATE, which would
+-- also block the ON DELETE SET NULL above (account deletion runs as the auth
+-- admin role). Allow exactly that one change — user_id to NULL with every other
+-- column untouched — and nothing else.
+create or replace function public.protect_signal_record()
+returns trigger language plpgsql set search_path = public as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    if old.user_id is not null and new.user_id is null
+       and (to_jsonb(new) - 'user_id') = (to_jsonb(old) - 'user_id') then
+      return new;
+    end if;
+    raise exception 'Signals are immutable once created (server-managed)';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_signal_record on public.signals;
+create trigger protect_signal_record
+  before update on public.signals
+  for each row execute function public.protect_signal_record();
+
+
+-- ============================================================
+-- 0013_public_record_and_paper_reset.sql
+-- ============================================================
+-- Public track-record summary + one-time paper-money reset.
+-- Run in the Supabase SQL editor after 0012, BEFORE deploying the matching code
+-- (the /verify page reads /api/track-record, which calls track_record_summary).
+-- Idempotent: safe to re-run; the reset in part 2 runs at most once per database.
+
+-- ─────────────────────────────── 1. Public track-record summary ─────────────
+-- Aggregate counts over the signals that are in an anchored daily tree, so a
+-- logged-out visitor can see the live record (and how many days are confirmed
+-- on-chain) without any per-signal or per-user data leaving the database.
+-- Win/loss follow the app's rule (src/lib/signal-stats.ts): only BUY/SELL count;
+-- HOLD is non-directional and excluded. Signals are immutable once scored
+-- (0004), so the outcome joined here is the one that was hashed into the leaf.
+create or replace function public.track_record_summary()
+returns table (
+  anchored_days bigint,
+  confirmed_days bigint,
+  anchored_signals bigint,
+  directional bigint,
+  wins bigint,
+  losses bigint,
+  first_day date,
+  last_day date
+) language sql stable security definer set search_path = public as $$
+  with leaves as (
+    select s.action, s.outcome, l.anchor_day
+    from public.signal_leaves l
+    join public.signals s on s.id = l.signal_id
+  )
+  select
+    (select count(*) from public.signal_anchors),
+    (select count(*) from public.signal_anchors where status = 'confirmed' and tx_hash is not null),
+    count(*),
+    count(*) filter (where action in ('BUY', 'SELL')),
+    count(*) filter (where action in ('BUY', 'SELL') and outcome in ('hit_target', 'expired_profit')),
+    count(*) filter (where action in ('BUY', 'SELL') and outcome in ('hit_stop', 'expired_loss')),
+    min(anchor_day),
+    max(anchor_day)
+  from leaves;
+$$;
+
+revoke all on function public.track_record_summary() from public, anon, authenticated;
+grant execute on function public.track_record_summary() to service_role;
+
+-- ─────────────────────────────── 2. One-time paper-money reset ──────────────
+-- Before 0012, clients could INSERT/UPDATE their own paper_accounts,
+-- staking_positions and futures_positions rows directly. 0012 closed that, but
+-- rows written before it are still trusted by unstake_position /
+-- close_futures_position (which pay out from the row's own numbers), and forged
+-- balances survive. Legacy rows can't be told apart from honest ones, so every
+-- paper account is put back to the starting 10,000 USD and every open stake /
+-- future is closed without payout — the same thing reset_paper_balance does for
+-- one user. This is paper money only; signals and the track record are untouched.
+-- Each affected user gets an in-app notification explaining the reset, and the
+-- futures history shows a voided position as "Voided (paper reset)".
+--
+-- Guarded by a marker row so re-running this file (or ALL_MIGRATIONS.sql) never
+-- wipes balances earned after the first run.
+create table if not exists public.data_fixes (
+  name text primary key,
+  applied_at timestamptz not null default now()
+);
+alter table public.data_fixes enable row level security;
+-- No policies: server-side bookkeeping only.
+
+do $$
+begin
+  if not exists (select 1 from public.data_fixes where name = '0013_paper_reset') then
+    -- Tell every affected user first (balance not already at the start value,
+    -- or an open stake / future that is about to be voided), so nobody finds a
+    -- changed balance or a voided position without an explanation. Inserted
+    -- directly (not via profiles.notifications): this is an account notice, not
+    -- a marketing or signal message.
+    insert into public.notifications (user_id, type, title, message, read, data)
+    select affected.user_id, 'system', 'Paper account reset',
+           'We reset all paper balances to $10,000 and closed open simulated stakes and futures '
+           || 'without payout after a data-integrity fix. Real money and your signal track record '
+           || 'are not affected.',
+           false, jsonb_build_object('reason', '0013_paper_reset')
+    from (
+      select user_id from public.paper_accounts where balance_usd <> 10000
+      union
+      select user_id from public.staking_positions where active
+      union
+      select user_id from public.futures_positions where status = 'open'
+    ) affected
+    where exists (select 1 from auth.users u where u.id = affected.user_id);
+
+    update public.staking_positions
+      set active = false, closed_at = now()
+      where active;
+    update public.futures_positions
+      set status = 'closed', closed_at = now(), close_price = null, realized_pnl = null
+      where status = 'open';
+    update public.paper_accounts
+      set balance_usd = 10000, updated_at = now();
+    insert into public.data_fixes (name) values ('0013_paper_reset');
+  end if;
+end;
+$$;
+
+
+-- ============================================================
+-- 0014_engine_and_link_limits.sql
+-- ============================================================
+-- Paper-futures limits, orders guard and one Telegram chat per account.
+-- Run in the Supabase SQL editor after 0013, BEFORE deploying the matching code
+-- (DELETE /api/telegram/link calls unlink_telegram_account). Idempotent: safe to
+-- re-run.
+--
+-- What it closes:
+--   1. Futures: a margin floor and a per-user cap on open positions, so nobody
+--      can flood the engine's liquidation scan with dust positions; and a close
+--      at a mark already past the liquidation price settles as a liquidation
+--      (credit 0) instead of paying out margin + PnL.
+--   2. Orders: clients still write their own paper orders, so a trigger caps how
+--      many may be pending per user and rejects malformed rows.
+--   3. Telegram: one linked chat per account. Redeeming a code moves the link to
+--      the new chat (the old one is unlinked and its daily alerts switched off),
+--      and the account owner can unlink from the website.
+
+-- ─────────────────────────────────────────── 1. Paper futures ───────────────
+-- Same signature and grants as 0012; adds the margin floor (MIN_MARGIN_USD in
+-- src/lib/futures.ts) and the open-position cap (MAX_OPEN_POSITIONS). The count
+-- runs under the paper_accounts row lock, so two concurrent opens for the same
+-- user can't both slip under the cap.
+create or replace function public.open_futures_position(
+  p_uid uuid, p_symbol text, p_side text, p_leverage numeric, p_entry numeric,
+  p_quantity numeric, p_margin numeric, p_liquidation numeric
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  bal numeric;
+  open_count int;
+  new_id uuid;
+begin
+  if p_uid is null then raise exception 'Missing user'; end if;
+  if p_side not in ('long', 'short') then raise exception 'Invalid side'; end if;
+  if p_leverage is null or p_leverage < 1 or p_leverage > 20 then raise exception 'Invalid leverage'; end if;
+  if p_margin is null or p_margin < 10 or p_margin > 1000000000 then raise exception 'Invalid margin'; end if;
+  if p_entry is null or p_entry <= 0 or p_quantity is null or p_quantity <= 0
+     or p_liquidation is null or p_liquidation <= 0 then
+    raise exception 'Invalid position numbers';
+  end if;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (p_uid, 10000)
+    on conflict (user_id) do nothing;
+  select balance_usd into bal from public.paper_accounts where user_id = p_uid for update;
+
+  select count(*) into open_count
+    from public.futures_positions
+    where user_id = p_uid and status = 'open';
+  if open_count >= 25 then raise exception 'Too many open positions'; end if;
+
+  if bal < p_margin then raise exception 'Insufficient paper balance'; end if;
+
+  update public.paper_accounts
+    set balance_usd = balance_usd - p_margin, updated_at = now()
+    where user_id = p_uid;
+
+  insert into public.futures_positions (
+    user_id, symbol, side, leverage, entry_price, quantity, margin_usd,
+    margin_mode, liquidation_price, status
+  ) values (
+    p_uid, upper(p_symbol), p_side, p_leverage, p_entry, p_quantity, p_margin,
+    'isolated', p_liquidation, 'open'
+  ) returning id into new_id;
+  return new_id;
+end;
+$$;
+
+revoke all on function public.open_futures_position(uuid, text, text, numeric, numeric, numeric, numeric, numeric)
+  from public, anon, authenticated;
+grant execute on function public.open_futures_position(uuid, text, text, numeric, numeric, numeric, numeric, numeric)
+  to service_role;
+
+-- Liquidation is checked first: if the mark has crossed the position's
+-- liquidation price (long: mark <= liq, short: mark >= liq; same rule as
+-- isLiquidated in src/lib/futures.ts) the position is settled exactly as the
+-- engine would have settled it — the margin is lost, nothing is credited — even
+-- if the engine has not reached it yet.
+create or replace function public.close_futures_position(p_uid uuid, p_id uuid, p_mark numeric)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  pos record;
+  pnl numeric;
+  credit numeric;
+begin
+  if p_uid is null or p_id is null then raise exception 'Missing arguments'; end if;
+  if p_mark is null or p_mark <= 0 then raise exception 'Invalid mark price'; end if;
+
+  select * into pos from public.futures_positions
+    where id = p_id and user_id = p_uid
+    for update;
+  if not found then
+    return jsonb_build_object('closed', false, 'reason', 'not_found');
+  end if;
+  if pos.status <> 'open' then
+    return jsonb_build_object('closed', false, 'reason', 'not_open', 'status', pos.status);
+  end if;
+
+  if (pos.side = 'long' and p_mark <= pos.liquidation_price)
+     or (pos.side = 'short' and p_mark >= pos.liquidation_price) then
+    update public.futures_positions
+      set status = 'liquidated', close_price = pos.liquidation_price,
+          realized_pnl = -pos.margin_usd, closed_at = now()
+      where id = p_id;
+    return jsonb_build_object('closed', true, 'liquidated', true,
+                              'realized_pnl', -pos.margin_usd, 'credit', 0);
+  end if;
+
+  pnl := case when pos.side = 'long'
+              then (p_mark - pos.entry_price) * pos.quantity
+              else (pos.entry_price - p_mark) * pos.quantity end;
+  credit := greatest(0, pos.margin_usd + pnl);
+
+  update public.futures_positions
+    set status = 'closed', close_price = p_mark, realized_pnl = pnl, closed_at = now()
+    where id = p_id;
+
+  insert into public.paper_accounts (user_id, balance_usd)
+    values (p_uid, 10000)
+    on conflict (user_id) do nothing;
+  update public.paper_accounts
+    set balance_usd = balance_usd + credit, updated_at = now()
+    where user_id = p_uid;
+
+  return jsonb_build_object('closed', true, 'liquidated', false, 'realized_pnl', pnl, 'credit', credit);
+end;
+$$;
+
+revoke all on function public.close_futures_position(uuid, uuid, numeric) from public, anon, authenticated;
+grant execute on function public.close_futures_position(uuid, uuid, numeric) to service_role;
+
+-- ─────────────────────────────────────────── 2. Orders guard ────────────────
+-- Paper orders are still written by the client (owner policies from 0001). The
+-- engine pages through every pending order, but each one is still work on every
+-- tick, so a client may hold at most 100 pending orders, and a pending row must
+-- be well-formed. The engine and other server code run as service_role and are
+-- not limited. SECURITY DEFINER so the count sees every pending row of that user
+-- regardless of the caller's policies.
+create or replace function public.guard_client_orders()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  pending_count int;
+begin
+  if auth.role() is distinct from 'service_role' and new.status = 'pending' then
+    if new.symbol is null or upper(new.symbol) !~ '^[A-Z0-9]{2,12}$' then
+      raise exception 'Invalid order symbol';
+    end if;
+    if new.amount is null or new.amount <= 0 or new.amount > 1000000000000 then
+      raise exception 'Invalid order amount';
+    end if;
+    if tg_op = 'INSERT' or old.status is distinct from 'pending' then
+      select count(*) into pending_count
+        from public.orders
+        where user_id = new.user_id and status = 'pending';
+      if pending_count >= 100 then
+        raise exception 'Too many open orders';
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.guard_client_orders() from public, anon, authenticated;
+
+drop trigger if exists guard_client_orders on public.orders;
+create trigger guard_client_orders
+  before insert or update on public.orders
+  for each row execute function public.guard_client_orders();
+
+-- ─────────────────────────────────── 3. One Telegram chat per account ───────
+-- Existing data first: where an account is linked to several chats, keep the
+-- most recently active one and unlink the rest (switching their alerts off), so
+-- the unique index below can be built.
+with ranked as (
+  select telegram_id,
+         row_number() over (partition by user_id order by updated_at desc, telegram_id desc) as rn
+  from public.telegram_users
+  where user_id is not null
+),
+extra as (
+  select telegram_id from ranked where rn > 1
+),
+unlinked as (
+  update public.telegram_users tu
+    set user_id = null, updated_at = now()
+    from extra
+    where tu.telegram_id = extra.telegram_id
+  returning tu.telegram_id
+)
+update public.telegram_prefs p
+  set alerts_enabled = false, updated_at = now()
+  from unlinked
+  where p.telegram_id = unlinked.telegram_id;
+
+create unique index if not exists telegram_users_one_chat_per_account
+  on public.telegram_users (user_id)
+  where user_id is not null;
+
+-- Same signature, result shape and grants as 0007. Linking moves the account to
+-- this chat: any other chat linked to the same account is unlinked first (and
+-- stops receiving its daily alerts), so one subscription can't be shared out to
+-- any number of chats, and a code leaked to someone else is undone by the owner
+-- simply linking again.
+create or replace function public.redeem_telegram_link(p_telegram_id bigint, p_code text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  lc record;
+begin
+  select * into lc from public.telegram_link_codes
+    where code = p_code
+    for update;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'invalid');
+  end if;
+  if lc.used_at is not null then
+    return jsonb_build_object('ok', false, 'reason', 'used');
+  end if;
+  if lc.expires_at < now() then
+    return jsonb_build_object('ok', false, 'reason', 'expired');
+  end if;
+
+  update public.telegram_prefs
+    set alerts_enabled = false, updated_at = now()
+    where telegram_id in (
+      select telegram_id from public.telegram_users
+       where user_id = lc.user_id and telegram_id <> p_telegram_id
+    );
+  update public.telegram_users
+    set user_id = null, updated_at = now()
+    where user_id = lc.user_id and telegram_id <> p_telegram_id;
+
+  insert into public.telegram_users (telegram_id, user_id)
+    values (p_telegram_id, lc.user_id)
+  on conflict (telegram_id) do update
+    set user_id = lc.user_id, updated_at = now();
+
+  update public.telegram_link_codes set used_at = now() where code = p_code;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+revoke all on function public.redeem_telegram_link(bigint, text) from public, anon, authenticated;
+grant execute on function public.redeem_telegram_link(bigint, text) to service_role;
+
+-- Self-serve unlink, called by DELETE /api/telegram/link with the user id taken
+-- from the caller's verified token. Also drops any unused link code, so a code
+-- that was shown but not yet redeemed can't re-link the account afterwards.
+-- Returns the number of chats unlinked.
+create or replace function public.unlink_telegram_account(p_user_id uuid)
+returns int language plpgsql security definer set search_path = public as $$
+declare
+  n int;
+begin
+  if p_user_id is null then raise exception 'Missing user'; end if;
+
+  delete from public.telegram_link_codes
+    where user_id = p_user_id and used_at is null;
+
+  update public.telegram_prefs
+    set alerts_enabled = false, updated_at = now()
+    where telegram_id in (select telegram_id from public.telegram_users where user_id = p_user_id);
+
+  update public.telegram_users
+    set user_id = null, updated_at = now()
+    where user_id = p_user_id;
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+revoke all on function public.unlink_telegram_account(uuid) from public, anon, authenticated;
+grant execute on function public.unlink_telegram_account(uuid) to service_role;
+
+-- ─────────────────────────────────── 4. Halted coins out of staking ─────────
+-- MATIC was replaced by POL in the coin catalogue (its Binance pair is halted);
+-- the staking cron now refreshes POL, so drop the stale MATIC rate. Open MATIC
+-- stakes can still be unstaked (unstake_position never reads staking_rates).
+delete from public.staking_rates where symbol = 'MATIC';
 

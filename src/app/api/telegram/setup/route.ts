@@ -1,35 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { secretsMatch } from '@/lib/telegram/api';
+import { secretsMatch, setWebhook, setMyCommands, getWebhookInfo, getMe } from '@/lib/telegram/api';
+import { resolveBaseUrl } from '@/lib/telegram/env';
+import { reportError } from '@/lib/server/report-error';
 
-// One-shot, self-service webhook registration for the DEPLOYED bot. After
-// deploying to Vercel (with TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET set),
-// open this URL ONCE in a browser:
+// One-shot webhook registration for the DEPLOYED bot. After deploying (with
+// TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET set), call it ONCE:
 //
-//   https://<your-app>.vercel.app/api/telegram/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+//   curl -X POST https://<your-app>/api/telegram/setup \
+//     -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>"
 //
-// It points Telegram at THIS deployment's /api/telegram/webhook (URL derived from
-// the request, so it's always correct) and sets the command menu. Guarded by the
-// webhook secret so randoms can't hijack the bot's webhook.
+// It points Telegram at this deployment's /api/telegram/webhook and sets the
+// command menu from the shared catalogue (services/bot/commands.ts). Re-run it
+// after adding commands.
+//
+// The secret travels in a header, never the query string (URLs end up in access
+// logs and browser history). In production the webhook URL comes ONLY from
+// NEXT_PUBLIC_APP_URL — never from request headers — so a forged Host header
+// can't point the bot's webhook somewhere else.
 export const dynamic = 'force-dynamic';
 
-function baseUrl(request: NextRequest): string {
-  const env = process.env.NEXT_PUBLIC_APP_URL;
-  if (env && !/localhost/.test(env)) return env.replace(/\/$/, '');
-  const host = request.headers.get('x-forwarded-host') || request.headers.get('host');
-  const proto = request.headers.get('x-forwarded-proto') || 'https';
-  return host ? `${proto}://${host}` : (env || 'http://localhost:3000');
+function isProduction(): boolean {
+  return process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
 }
 
-const COMMANDS = [
-  { command: 'start', description: 'Intro & how the honest coach works' },
-  { command: 'signal', description: 'Honest read on a coin, e.g. /signal BTC' },
-  { command: 'verify', description: 'Our provable on-chain track record' },
-  { command: 'link', description: 'Connect your CryptoSuccess account' },
-  { command: 'subscribe', description: 'Go Pro (unlimited signals)' },
-  { command: 'help', description: 'All commands' },
-];
+/** Public https base URL for the webhook, or null when it can't be trusted. */
+function webhookBaseUrl(request: NextRequest): string | null {
+  const env = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (isProduction()) {
+    if (!env) return null;
+    try {
+      const u = new URL(env);
+      if (u.protocol !== 'https:' || /localhost|127\.0\.0\.1/.test(u.hostname)) return null;
+      return u.origin;
+    } catch {
+      return null;
+    }
+  }
+  // Local / preview: allow the request host (e.g. a tunnel) for convenience.
+  return resolveBaseUrl(request.headers);
+}
 
-export async function GET(request: NextRequest) {
+function bearer(request: NextRequest): string | null {
+  const header = request.headers.get('authorization');
+  return header?.startsWith('Bearer ') ? header.slice(7) : null;
+}
+
+async function handler(request: NextRequest) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!token || !secret) {
@@ -39,46 +55,45 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Guard: caller must know the webhook secret.
-  const key = new URL(request.url).searchParams.get('key');
-  if (!secretsMatch(key, secret)) {
+  // Guard: caller must know the webhook secret (constant-time compare).
+  if (!secretsMatch(bearer(request), secret)) {
     return NextResponse.json(
-      { ok: false, error: 'Unauthorized. Append ?key=<TELEGRAM_WEBHOOK_SECRET> to this URL.' },
+      { ok: false, error: 'Unauthorized. Send Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>.' },
       { status: 401 },
     );
   }
 
-  const call = (method: string, body: Record<string, unknown>) =>
-    fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(r => r.json());
-
-  const webhookUrl = `${baseUrl(request)}/api/telegram/webhook`;
+  const base = webhookBaseUrl(request);
+  if (!base) {
+    return NextResponse.json(
+      { ok: false, error: 'Set NEXT_PUBLIC_APP_URL to the public https URL of this deployment, then redeploy.' },
+      { status: 503 },
+    );
+  }
+  const webhookUrl = `${base}/api/telegram/webhook`;
 
   try {
-    const setWebhook = await call('setWebhook', {
-      url: webhookUrl,
-      secret_token: secret,
-      allowed_updates: ['message'],
-      drop_pending_updates: true,
-    });
-    await call('setMyCommands', { commands: COMMANDS });
-    const info = await call('getWebhookInfo', {});
-    const me = await call('getMe', {});
+    await setWebhook(webhookUrl, secret);
+    await setMyCommands();
+    const info = await getWebhookInfo();
+    const me = await getMe();
 
     return NextResponse.json({
-      ok: !!setWebhook.ok,
-      message: setWebhook.ok
-        ? `✅ Bot is live. Open Telegram and message @${me?.result?.username ?? 'your bot'} — send /start.`
-        : '❌ setWebhook failed — see details.',
+      ok: true,
+      message: `Bot is live. Open Telegram and message @${me?.username ?? 'your bot'}, then send /start.`,
       webhookUrl,
-      bot: me?.result?.username ? `@${me.result.username}` : undefined,
-      setWebhook,
-      webhookInfo: info?.result,
+      bot: me?.username ? `@${me.username}` : undefined,
+      // Diagnostics only — never echo the token or secret.
+      webhookInfo: info
+        ? { url: info.url, pending_update_count: info.pending_update_count, last_error_message: info.last_error_message }
+        : undefined,
     });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? 'setup failed' }, { status: 502 });
+  } catch (e) {
+    await reportError('telegram.setup', e, { route: '/api/telegram/setup' });
+    return NextResponse.json({ ok: false, error: 'Telegram setup failed. Check the server logs.' }, { status: 502 });
   }
+}
+
+export async function POST(request: NextRequest) {
+  return handler(request);
 }

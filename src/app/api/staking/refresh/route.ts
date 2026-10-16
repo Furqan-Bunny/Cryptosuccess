@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import { isCronAuthorized } from '@/lib/server/cron-auth';
 import { createServiceClient } from '@/lib/supabase/server';
+import { withCronMonitoring } from '@/lib/server/cron-monitor';
+import { reportError } from '@/lib/server/report-error';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -12,7 +14,7 @@ const STAKEABLE: { symbol: string; match: string[]; fallbackApy: number }[] = [
   { symbol: 'ETH', match: ['STETH', 'WSTETH'], fallbackApy: 3.2 },
   { symbol: 'SOL', match: ['MSOL', 'JITOSOL', 'BSOL'], fallbackApy: 6.5 },
   { symbol: 'BNB', match: ['ANKRBNB', 'SLISBNB', 'BNBX'], fallbackApy: 2.0 },
-  { symbol: 'MATIC', match: ['STMATIC', 'MATICX'], fallbackApy: 4.0 },
+  { symbol: 'POL', match: ['STPOL', 'POL', 'STMATIC', 'MATICX'], fallbackApy: 4.0 },
   { symbol: 'ADA', match: ['ADA'], fallbackApy: 2.8 },
   { symbol: 'DOT', match: ['DOT'], fallbackApy: 11.0 },
   { symbol: 'ATOM', match: ['STATOM', 'ATOM'], fallbackApy: 14.0 },
@@ -33,14 +35,19 @@ async function handler(request: NextRequest) {
     return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
   }
 
-  try {
+  return withCronMonitoring('staking-refresh', async () => {
     const db = createServiceClient();
     let pools: any[] = [];
     try {
       const resp = await axios.get('https://yields.llama.fi/pools', { timeout: 15000 });
       pools = resp.data?.data ?? [];
     } catch (e) {
-      console.warn('DefiLlama fetch failed; using fallback APYs:', e);
+      // Degrades to fallback APYs; logged as a warning (no alert).
+      await reportError('cron.staking-refresh.defillama', e, {
+        route: '/api/staking/refresh',
+        level: 'warn',
+        alert: false,
+      });
     }
 
     const upserts = STAKEABLE.map(coin => {
@@ -69,10 +76,7 @@ async function handler(request: NextRequest) {
     if (error) throw new Error(error.message);
 
     return NextResponse.json({ ok: true, updated: upserts.length });
-  } catch (error) {
-    console.error('Staking refresh error:', error);
-    return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
-  }
+  });
 }
 
 export async function GET(request: NextRequest) {

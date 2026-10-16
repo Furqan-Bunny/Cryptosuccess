@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { SUBSCRIPTION_PLANS } from '@/types/subscription.types';
+import { reportError } from '@/lib/server/report-error';
+import { expectedCryptoPriceUsd, hasActiveCardSubscription } from '@/lib/subscription-rules';
+import { rateLimit } from '@/lib/server/rate-limit';
+import { sameOriginUrl, trustedAppOrigin } from '@/lib/safe-redirect';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,13 +33,39 @@ export async function POST(request: NextRequest) {
     }
     const user = userData.user;
 
-    const { billingInterval, redirectUrl, cancelUrl } = await request.json();
-    const interval: 'monthly' | 'yearly' = billingInterval === 'yearly' ? 'yearly' : 'monthly';
-    // Price is server-authoritative (never trust a client-supplied amount).
-    const amount = SUBSCRIPTION_PLANS.pro.price[interval];
+    // Every call creates a NOWPayments invoice on our API key.
+    const rl = await rateLimit('crypto-checkout', user.id, 5, 60);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { available: false, reason: 'rate_limited' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } }
+      );
+    }
 
-    // Public base URL for the IPN callback (must be reachable by NOWPayments).
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
+    const body = await request.json().catch(() => null);
+    const interval: 'monthly' | 'yearly' = body?.billingInterval === 'yearly' ? 'yearly' : 'monthly';
+    // Price is server-authoritative (never trust a client-supplied amount). The
+    // IPN webhook re-checks the paid invoice against this same figure.
+    const amount = expectedCryptoPriceUsd(interval);
+
+    // An active card subscriber would be paying twice — point them at billing
+    // instead. A crypto Pro may pay again: the webhook extends their period.
+    // Fail closed if the plan can't be read.
+    const { data: profile, error: profileErr } = await db
+      .from('profiles')
+      .select('subscription_status, plan_id')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profileErr) throw new Error(profileErr.message);
+    if (profile && hasActiveCardSubscription({ status: profile.subscription_status, planId: profile.plan_id, currentPeriodEnd: null })) {
+      return NextResponse.json({ available: false, reason: 'already_subscribed' }, { status: 409 });
+    }
+
+    // Public base URL for the IPN callback (must be reachable by NOWPayments),
+    // and the only origin the hosted invoice may send the user back to.
+    const appUrl = trustedAppOrigin(process.env.NEXT_PUBLIC_APP_URL, request.url);
+    const redirectUrl = sameOriginUrl(body?.redirectUrl, appUrl) ?? `${appUrl}/subscription/success?provider=crypto`;
+    const cancelUrl = sameOriginUrl(body?.cancelUrl, appUrl) ?? `${appUrl}/pricing`;
 
     const resp = await fetch(`${API}/invoice`, {
       method: 'POST',
@@ -54,7 +83,11 @@ export async function POST(request: NextRequest) {
     });
 
     if (!resp.ok) {
-      console.error('NOWPayments invoice failed:', resp.status, await resp.text().catch(() => ''));
+      await reportError('crypto.checkout', new Error('NOWPayments invoice failed'), {
+        route: '/api/crypto/checkout',
+        status: resp.status,
+        providerError: (await resp.text().catch(() => '')).slice(0, 200),
+      });
       return NextResponse.json({ available: false, reason: 'invoice_failed' }, { status: 502 });
     }
 
@@ -65,7 +98,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ url, id: json.id });
   } catch (error) {
-    console.error('Crypto checkout error:', error);
+    await reportError('crypto.checkout', error, { route: '/api/crypto/checkout' });
     return NextResponse.json({ available: false, reason: 'error' }, { status: 500 });
   }
 }

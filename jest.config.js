@@ -13,7 +13,12 @@ const customJestConfig = {
     '^@utils/(.*)$': '<rootDir>/src/utils/$1',
     '^@types/(.*)$': '<rootDir>/src/types/$1',
   },
-  testMatch: ['<rootDir>/tests/**/*.test.ts', '<rootDir>/tests/**/*.test.tsx'],
+  // A regex instead of a <rootDir> glob: on Windows a checkout path containing a
+  // dot-directory (e.g. a git worktree under .claude/) makes the glob match 0 files.
+  testRegex: String.raw`[/\\]tests[/\\].*\.test\.tsx?$`,
+  // Nested worktrees / agent scratch dirs hold whole copies of the repo.
+  modulePathIgnorePatterns: ['<rootDir>/.claude/'],
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/.claude/'],
 };
 
 module.exports = createJestConfig(customJestConfig);

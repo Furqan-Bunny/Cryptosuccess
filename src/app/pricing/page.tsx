@@ -4,44 +4,78 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
-import { SUBSCRIPTION_PLANS } from '@/types/subscription.types';
+import { SUBSCRIPTION_PLANS, type SubscriptionPlan } from '@/types/subscription.types';
 import { FaCheck, FaArrowLeft } from 'react-icons/fa';
 import toast from 'react-hot-toast';
+import { isProSubscription } from '@/lib/signal-allowance';
+import { isCryptoPlan } from '@/lib/subscription-rules';
+import { CRYPTO_REFUND_TERMS, REFUND_DAYS, TRACK_RECORD_SCOPE } from '@/lib/legal-copy';
+import { saveCryptoBaseline } from '@/lib/crypto-checkout-baseline';
+
+type Interval = 'monthly' | 'yearly';
+
+
+// Stripe plan id for the selected interval. The checkout service maps both to the
+// Pro price; the interval is passed alongside so yearly checkouts stay yearly.
+function proPlanId(interval: Interval): string {
+  return interval === 'yearly' ? 'pro_yearly' : 'pro_monthly';
+}
+
+// Rounded yearly saving vs. paying monthly, derived from the plan prices so the
+// toggle label can never drift from the real numbers.
+function yearlySavingPercent(): number {
+  const { monthly, yearly } = SUBSCRIPTION_PLANS.pro.price;
+  if (monthly <= 0) return 0;
+  return Math.round((1 - yearly / (monthly * 12)) * 100);
+}
 
 export default function PricingPage() {
   const { user, profile } = useAuth();
   const router = useRouter();
-  const [billingInterval, setBillingInterval] = useState<'monthly' | 'yearly'>('monthly');
+  const [billingInterval, setBillingInterval] = useState<Interval>('monthly');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubscribe = async (planId: string) => {
-    if (!user) {
-      toast.error('Please sign in to subscribe');
-      router.push('/login?redirect=/pricing');
-      return;
-    }
+  const isPro = isProSubscription(profile?.subscription);
+  // A one-off crypto Pro can pay again; the new period extends the current one.
+  const isCryptoPro = isPro && isCryptoPlan(profile?.subscription?.planId);
+  const saving = yearlySavingPercent();
+
+  const requireSignIn = (): boolean => {
+    if (user) return true;
+    toast.error('Please sign in to subscribe');
+    router.push('/login?redirect=/pricing');
+    return false;
+  };
+
+  const handleSubscribe = async () => {
+    if (!requireSignIn()) return;
 
     setIsLoading(true);
     try {
       const { stripeService } = await import('@/services/stripe.service');
-      await stripeService.subscribeToPlan(planId, billingInterval);
+      await stripeService.subscribeToPlan(proPlanId(billingInterval), billingInterval);
     } catch (error) {
       console.error('Checkout error:', error);
-      toast.error('Failed to start checkout. Please try again.');
+      // Server / plan errors carry a user-safe message (e.g. "Already subscribed").
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to start checkout. Please try again.'
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleCryptoPay = async () => {
-    if (!user) {
-      toast.error('Please sign in to subscribe');
-      router.push('/login?redirect=/pricing');
-      return;
-    }
+    if (!requireSignIn()) return;
+
     setIsLoading(true);
     try {
       const { cryptoPayService } = await import('@/services/crypto-pay.service');
+      // Lets the success page tell this payment apart from Pro that is already
+      // running (display only; Pro is granted by the confirmed-payment webhook).
+      saveCryptoBaseline(isPro ? profile?.subscription?.currentPeriodEnd : null);
       await cryptoPayService.startCheckout(billingInterval);
     } catch (error) {
       console.error('Crypto checkout error:', error);
@@ -99,14 +133,24 @@ export default function PricingPage() {
           <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
             Simple, Transparent Pricing
           </h1>
-          <p className="text-xl text-text-secondary mb-8">
-            Choose the plan that fits your trading needs
+          <p className="text-xl text-text-secondary mb-3">
+            Start free. Upgrade only if the extra features help you.
+          </p>
+          <p className="text-sm text-text-secondary mb-8 max-w-2xl mx-auto">
+            Pro gives you more signals and the simulated trading tools. It does not make any
+            signal more likely to be right.
           </p>
 
           {/* Billing Toggle */}
-          <div className="inline-flex items-center bg-surface rounded-lg p-1 border border-gray-800">
+          <div
+            className="inline-flex items-center bg-surface rounded-lg p-1 border border-gray-800"
+            role="group"
+            aria-label="Billing interval"
+          >
             <button
+              type="button"
               onClick={() => setBillingInterval('monthly')}
+              aria-pressed={billingInterval === 'monthly'}
               className={`px-4 py-2 rounded-md font-medium transition-all ${
                 billingInterval === 'monthly'
                   ? 'bg-primary text-white'
@@ -116,7 +160,9 @@ export default function PricingPage() {
               Monthly
             </button>
             <button
+              type="button"
               onClick={() => setBillingInterval('yearly')}
+              aria-pressed={billingInterval === 'yearly'}
               className={`px-4 py-2 rounded-md font-medium transition-all ${
                 billingInterval === 'yearly'
                   ? 'bg-primary text-white'
@@ -124,41 +170,99 @@ export default function PricingPage() {
               }`}
             >
               Yearly
-              <span className="ml-2 text-success text-sm">Save 20%</span>
+              {saving > 0 && <span className="ml-2 text-success text-sm">Save {saving}%</span>}
             </button>
           </div>
         </div>
 
         {/* Pricing Cards */}
-        <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+        <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto items-start">
           {/* Free Plan */}
-          <PricingCard
-            plan={SUBSCRIPTION_PLANS.free}
-            billingInterval={billingInterval}
-            currentPlan={profile?.subscription?.status}
-            onSubscribe={handleSubscribe}
-            isLoading={isLoading}
-          />
+          <PlanCard plan={SUBSCRIPTION_PLANS.free} billingInterval={billingInterval}>
+            {!user ? (
+              <Link href="/register" className="btn-secondary w-full py-3 font-semibold">
+                Get Started
+              </Link>
+            ) : isPro ? (
+              <p className="text-center text-sm text-text-secondary py-3">
+                Included with your Pro plan
+              </p>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="w-full py-3 font-semibold rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed"
+              >
+                Current Plan
+              </button>
+            )}
+          </PlanCard>
 
           {/* Pro Plan */}
-          <PricingCard
-            plan={SUBSCRIPTION_PLANS.pro}
-            billingInterval={billingInterval}
-            currentPlan={profile?.subscription?.status}
-            onSubscribe={handleSubscribe}
-            onCryptoPay={handleCryptoPay}
-            isLoading={isLoading}
-            popular
-          />
+          <PlanCard plan={SUBSCRIPTION_PLANS.pro} billingInterval={billingInterval} highlighted>
+            {isPro ? (
+              <>
+                <button
+                  type="button"
+                  disabled
+                  className="w-full py-3 font-semibold rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed"
+                >
+                  Current Plan
+                </button>
+                {isCryptoPro && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleCryptoPay}
+                      disabled={isLoading}
+                      className="w-full mt-3 py-3 font-semibold rounded-lg btn-ghost border border-gray-700"
+                    >
+                      Extend with crypto (+{billingInterval === 'yearly' ? '1 year' : '1 month'})
+                    </button>
+                    <p className="text-xs text-text-secondary mt-3 text-center">
+                      Extra time is added to the end of your current period.
+                    </p>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleSubscribe}
+                  disabled={isLoading}
+                  className="btn-primary w-full py-3 font-semibold"
+                >
+                  {isLoading
+                    ? 'Starting checkout...'
+                    : `Subscribe ${billingInterval === 'yearly' ? 'yearly' : 'monthly'} with card`}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCryptoPay}
+                  disabled={isLoading}
+                  className="w-full mt-3 py-3 font-semibold rounded-lg btn-ghost border border-gray-700"
+                >
+                  Pay with crypto (one-time, {billingInterval === 'yearly' ? '1 year' : '1 month'})
+                </button>
+                <p className="text-xs text-text-secondary mt-3 text-center">
+                  Card subscriptions renew until cancelled. Crypto payments do not renew.
+                </p>
+              </>
+            )}
+          </PlanCard>
 
-          {/* Premium Plan */}
-          <PricingCard
-            plan={SUBSCRIPTION_PLANS.premium}
-            billingInterval={billingInterval}
-            currentPlan={profile?.subscription?.status}
-            onSubscribe={handleSubscribe}
-            isLoading={isLoading}
-          />
+          {/* Premium Plan: not purchasable yet. The account system only stores
+              Free and Pro, so selling Premium would take money for nothing. */}
+          <PlanCard plan={SUBSCRIPTION_PLANS.premium} billingInterval={billingInterval} comingSoon>
+            <button
+              type="button"
+              disabled
+              className="w-full py-3 font-semibold rounded-lg bg-gray-700 text-gray-400 cursor-not-allowed"
+            >
+              Coming soon
+            </button>
+          </PlanCard>
         </div>
 
         {/* FAQ Section */}
@@ -170,53 +274,67 @@ export default function PricingPage() {
           <div className="space-y-6">
             <FAQItem
               question="Can I cancel my subscription anytime?"
-              answer="Yes, you can cancel your subscription at any time. You'll continue to have access to Pro features until the end of your billing period."
+              answer="Yes. Card subscriptions can be cancelled at any time from your account settings, and you keep Pro until the end of the period you have already paid for. Crypto payments are one-time and simply end when the paid period is over."
             />
             <FAQItem
               question="What payment methods do you accept?"
-              answer="We accept all major credit cards, debit cards, and digital wallets through Stripe, plus cryptocurrency via Coinbase Commerce. Crypto payments grant Pro for a fixed period (monthly or yearly) and do not auto-renew."
+              answer="Cards and supported digital wallets through Stripe, plus cryptocurrency through NOWPayments. A crypto payment grants Pro for a fixed period (one month or one year) and does not auto-renew."
             />
             <FAQItem
               question="Is there a free trial?"
-              answer="We offer a generous free tier with 5 signals per day. You can upgrade to Pro anytime to unlock unlimited signals and advanced features."
+              answer="No. Instead there is a Free plan with 5 signals a day that never expires, so you can judge the product and check our track record before paying anything."
             />
             <FAQItem
               question="Do you offer refunds?"
-              answer="We offer a 14-day money-back guarantee. If you're not satisfied with our Pro plan, contact support within 14 days for a full refund."
+              answer={`Yes. If Pro is not right for you, email support within ${REFUND_DAYS} days of your first payment for a full refund. Renewals are not refunded, but you can cancel before the next renewal at any time. ${CRYPTO_REFUND_TERMS}`}
+            />
+            <FAQItem
+              question="Is the trading real money?"
+              answer="No. The portfolio, spot, futures, staking and DCA tools are paper trading with simulated funds. Nothing is bought or sold on an exchange for you."
+            />
+            <FAQItem
+              question="Will Pro make me money?"
+              answer={`We cannot promise that, and nobody honestly can. Pro gives you more signals and more tools, not better odds. ${TRACK_RECORD_SCOPE} Wins and losses are kept alike, so you can judge it for yourself.`}
             />
           </div>
+
+          <p className="text-sm text-text-secondary mt-10 text-center">
+            Prices are in USD. See our{' '}
+            <Link href="/terms" className="text-primary hover:text-primary-light">Terms of Service</Link>
+            {' '}and{' '}
+            <Link href="/disclaimer" className="text-primary hover:text-primary-light">Risk Disclaimer</Link>.
+          </p>
         </div>
       </main>
     </div>
   );
 }
 
-function PricingCard({
+function PlanCard({
   plan,
   billingInterval,
-  currentPlan,
-  onSubscribe,
-  onCryptoPay,
-  isLoading,
-  popular = false,
+  highlighted = false,
+  comingSoon = false,
+  children,
 }: {
-  plan: typeof SUBSCRIPTION_PLANS.free;
-  billingInterval: 'monthly' | 'yearly';
-  currentPlan?: string;
-  onSubscribe: (planId: string) => void;
-  onCryptoPay?: () => void;
-  isLoading: boolean;
-  popular?: boolean;
+  plan: SubscriptionPlan;
+  billingInterval: Interval;
+  highlighted?: boolean;
+  comingSoon?: boolean;
+  children: React.ReactNode;
 }) {
   const price = plan.price[billingInterval];
-  const isCurrentPlan = currentPlan === plan.type;
 
   return (
-    <div className={`card p-8 relative ${popular ? 'border-primary scale-105' : ''}`}>
-      {popular && (
+    <div
+      className={`card p-8 relative overflow-visible ${highlighted ? 'border-primary md:scale-105' : ''} ${
+        comingSoon ? 'opacity-70' : ''
+      }`}
+    >
+      {comingSoon && (
         <div className="absolute -top-4 left-1/2 -translate-x-1/2">
-          <span className="bg-primary text-white text-sm font-semibold px-4 py-1.5 rounded-full">
-            Most Popular
+          <span className="bg-gray-700 text-white text-sm font-semibold px-4 py-1.5 rounded-full whitespace-nowrap">
+            Coming soon
           </span>
         </div>
       )}
@@ -233,43 +351,24 @@ function PricingCard({
         </div>
         {billingInterval === 'yearly' && price > 0 && (
           <p className="text-sm text-success mt-1">
-            ${(price / 12).toFixed(2)}/month
+            ${(price / 12).toFixed(2)}/month, billed yearly
           </p>
+        )}
+        {comingSoon && (
+          <p className="text-sm text-text-secondary mt-2">Not available to buy yet</p>
         )}
       </div>
 
       <ul className="space-y-3 mb-8">
-        {plan.features.map((feature, index) => (
-          <li key={index} className="flex items-start">
+        {plan.features.map(feature => (
+          <li key={feature} className="flex items-start">
             <FaCheck className="text-success mt-0.5 mr-3 flex-shrink-0" size={16} />
             <span className="text-text-secondary">{feature}</span>
           </li>
         ))}
       </ul>
 
-      <button
-        onClick={() => onSubscribe(plan.id)}
-        disabled={isLoading || isCurrentPlan}
-        className={`w-full py-3 font-semibold rounded-lg transition-all ${
-          isCurrentPlan
-            ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
-            : popular
-            ? 'btn-primary'
-            : 'btn-secondary'
-        }`}
-      >
-        {isCurrentPlan ? 'Current Plan' : price === 0 ? 'Get Started' : 'Subscribe'}
-      </button>
-
-      {onCryptoPay && price > 0 && !isCurrentPlan && (
-        <button
-          onClick={onCryptoPay}
-          disabled={isLoading}
-          className="w-full mt-3 py-3 font-semibold rounded-lg btn-ghost border border-gray-700 disabled:opacity-50"
-        >
-          Pay with crypto
-        </button>
-      )}
+      {children}
     </div>
   );
 }

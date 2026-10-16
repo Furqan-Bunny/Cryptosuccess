@@ -72,7 +72,7 @@ function StakingPageInner() {
     }
     setSubmitting(true);
     try {
-      const res = await stakingService.stake(user.uid, symbol, usd, selectedApy);
+      const res = await stakingService.stake(user.uid, symbol, usd);
       if (res.success) {
         toast.success(`Staked ${marketService.formatPrice(usd)} of ${symbol}`);
         setAmountUsd('500');

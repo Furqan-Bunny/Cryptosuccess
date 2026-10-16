@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
+import { isProSubscription } from '@/lib/signal-allowance';
 import {
   FaChartBar,
   FaChartLine,
@@ -53,7 +54,7 @@ const SECTIONS: { title: string; items: NavItem[] }[] = [
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { profile, signOut } = useAuth();
-  const isPro = profile?.subscription?.status === 'pro';
+  const isPro = isProSubscription(profile?.subscription);
 
   const renderItem = (item: NavItem) => {
     const Icon = item.icon;
@@ -108,7 +109,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* Bottom block */}
       <div className="border-t border-gray-800 p-3 space-y-1 shrink-0">
-        {profile?.subscription?.status === 'free' && (
+        {profile && !isProSubscription(profile.subscription) && (
           <Link
             href="/pricing"
             onClick={onNavigate}

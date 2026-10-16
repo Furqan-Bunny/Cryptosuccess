@@ -1,4 +1,4 @@
-// Turns a Telegram analyst read into a `signals` row so bot calls enter the same
+// Turns a bot analyst read into a `signals` row so bot calls enter the same
 // server-scored, on-chain-anchored track record as web signals. Pure (no I/O) so
 // the validation rules are unit-testable.
 import type { AnalystTake } from '@/services/analyst.service';
@@ -6,6 +6,10 @@ import { parseFirstNumber } from './format';
 
 // The analyst reports conviction as a word; the track record stores a number.
 // Deliberately modest values — conviction is not a probability of being right.
+// `signals.reasoning` prefix that marks a call as given in the Telegram bot. The
+// accountability follow-up cron selects on it, so it must stay stable.
+export const TELEGRAM_READ_PREFIX = 'Telegram analyst read';
+
 const CONVICTION_CONFIDENCE: Record<string, number> = { low: 40, medium: 55, high: 70 };
 
 export interface SignalRecord {
@@ -27,10 +31,13 @@ export function buildSignalRecord(analysis: AnalystTake, livePrice: number): Sig
   if (!Number.isFinite(livePrice) || livePrice <= 0) return null;
   const st = analysis.shortTerm;
   const confidence = CONVICTION_CONFIDENCE[st.conviction] ?? 40;
-  const reasoning = `Telegram analyst read (${st.horizon}): ${st.thesis}`.slice(0, 1000);
+  const reasoning = `${TELEGRAM_READ_PREFIX} (${st.horizon}): ${st.thesis}`.slice(0, 1000);
 
-  if (st.verdict === 'HOLD') {
-    // Non-directional: scored as neutral and excluded from the win rate.
+  // A HOLD, or a low-conviction BUY/SELL, is presented to the user as a
+  // STAY-OUT call (see formatSignal), so it is recorded as one: non-directional,
+  // scored as neutral and excluded from the win rate. Recording it as a trade
+  // would score the user on a call we told them not to take.
+  if (st.verdict === 'HOLD' || st.conviction === 'low') {
     return { action: 'HOLD', confidence, entryPrice: livePrice, targetPrice: livePrice, stopLoss: livePrice, reasoning };
   }
 

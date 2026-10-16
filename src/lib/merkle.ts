@@ -65,3 +65,18 @@ export function verifyMerkleProof(leaf: Hex, proof: Hex[], root: Hex): boolean {
   for (const sibling of proof) computed = hashPair(computed, sibling);
   return computed.toLowerCase() === root.toLowerCase();
 }
+
+/**
+ * True when a day's stored leaves are exactly the tree that was anchored:
+ * `expectedCount` rows (the anchor's leaf_count), sorted by leaf_index, with
+ * indices 0..n-1 and no gaps. A proof rebuilt from anything less would not match
+ * the on-chain root.
+ */
+export function isCompleteLeafSet(
+  leaves: ReadonlyArray<{ leaf_index: number }>,
+  expectedCount: number | null | undefined
+): boolean {
+  if (typeof expectedCount !== 'number' || !Number.isInteger(expectedCount) || expectedCount <= 0) return false;
+  if (leaves.length !== expectedCount) return false;
+  return leaves.every((l, i) => l.leaf_index === i);
+}

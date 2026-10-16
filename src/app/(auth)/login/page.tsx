@@ -8,8 +8,7 @@ import { useForm } from 'react-hook-form';
 import LoadingSpinner from '@/components/shared/LoadingSpinner';
 import { FaGoogle, FaEye, FaEyeSlash } from 'react-icons/fa';
 import toast from 'react-hot-toast';
-
-// v2.0 - Fixed TensorFlow initialization
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 interface LoginFormData {
   email: string;
@@ -21,7 +20,8 @@ export default function LoginPage() {
   const { signIn, signInWithGoogle, user } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirect = searchParams?.get('redirect') || '/dashboard';
+  // Same-site paths only — `?redirect=//evil.com` must not become an open redirect.
+  const redirect = safeRedirectPath(searchParams?.get('redirect'), '/dashboard');
 
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -194,7 +194,7 @@ export default function LoginPage() {
 
         {/* Sign Up Link */}
         <p className="text-center text-text-secondary">
-          Don't have an account?{' '}
+          Don&apos;t have an account?{' '}
           <Link
             href="/register"
             className="text-primary hover:text-primary-light font-medium transition-colors"

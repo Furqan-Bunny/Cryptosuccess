@@ -35,6 +35,12 @@ export interface FuturesPosition {
 export const MAX_LEVERAGE = 20;
 export const MIN_LEVERAGE = 1;
 
+// Floor on a position's margin and cap on how many a user may hold open at once.
+// Dust positions add nothing to a simulation but every open row is work for the
+// engine's liquidation scan. Mirrored in open_futures_position (migration 0014).
+export const MIN_MARGIN_USD = 10;
+export const MAX_OPEN_POSITIONS = 25;
+
 // Simplified maintenance-margin-rate (MMR) tiers by position notional (USD).
 // Real exchanges publish granular brackets via the fapi leverage-brackets API;
 // for a paper sim we use a small conservative table so we depend on no live

@@ -47,23 +47,10 @@ export interface TradeSignal {
 }
 
 class MarketService {
-  private readonly binanceApiUrl = 'https://api.binance.com/api/v3';
-  private readonly coingeckoApiUrl = process.env.COINGECKO_API_URL || 'https://api.coingecko.com/api/v3';
+  // All market data goes through our /api/market proxy routes (no CORS, rate
+  // limited, symbols mapped via the coin catalogue in src/lib/coins.ts).
 
-  // Symbol mappings
-  private readonly symbolMap: { [key: string]: string } = {
-    'ETH': 'ETHUSDT',
-    'SOL': 'SOLUSDT',
-    'BNB': 'BNBUSDT',
-  };
-
-  private readonly coingeckoIds: { [key: string]: string } = {
-    'ETH': 'ethereum',
-    'SOL': 'solana',
-    'BNB': 'binancecoin',
-  };
-
-  // Get current price for a symbol from Binance
+  // Get current price for a symbol
   async getCurrentPrice(symbol: string): Promise<MarketPrice> {
     try {
       // Use our API route to avoid CORS issues

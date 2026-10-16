@@ -2,6 +2,7 @@
 
 import { UserProfile } from '@/types/user.types';
 import { marketService } from '@/services/market.service';
+import { FREE_DAILY_SIGNAL_LIMIT, isProSubscription, remainingFreeSignals } from '@/lib/signal-allowance';
 import { FaSignal, FaTrophy, FaWallet, FaThermometerHalf } from 'react-icons/fa';
 
 interface SignalStats {
@@ -41,22 +42,30 @@ export default function MetricStrip({
   portfolioValue: number | null;
   sentimentValue: number | null;
 }) {
-  const isPro = profile?.subscription?.status === 'pro';
-  const signalsLeft = Math.max(0, 5 - (profile?.subscription?.signalsUsedToday || 0));
+  const isPro = isProSubscription(profile?.subscription);
+  const signalsLeft = profile ? remainingFreeSignals(profile.subscription) : null;
+  // A win rate only means something once calls have been scored (24h after
+  // they are made); pending calls alone must not read as a 0% record.
+  const scored = stats ? stats.wins + stats.losses : 0;
+  const winRateSub = !stats || stats.total === 0
+    ? 'No signals yet'
+    : scored > 0
+      ? `${stats.wins}W · ${stats.losses}L`
+      : `${stats.pending} pending · scored after 24h`;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <Metric
         icon={<FaSignal />}
-        label="Signals today"
-        value={isPro ? 'Unlimited' : `${signalsLeft} / 5`}
-        sub={isPro ? 'Pro plan' : 'Free plan'}
+        label="Signals left today"
+        value={isPro ? 'Unlimited' : signalsLeft === null ? '—' : `${signalsLeft} / ${FREE_DAILY_SIGNAL_LIMIT}`}
+        sub={isPro ? 'Pro plan' : 'Free plan · resets 00:00 UTC'}
       />
       <Metric
         icon={<FaTrophy />}
         label="Signal win rate"
-        value={stats && stats.total > 0 ? `${stats.winRate.toFixed(0)}%` : '—'}
-        sub={stats && stats.total > 0 ? `${stats.wins}W · ${stats.losses}L` : 'No signals yet'}
+        value={scored > 0 && stats ? `${stats.winRate.toFixed(0)}%` : '—'}
+        sub={winRateSub}
       />
       <Metric
         icon={<FaWallet />}

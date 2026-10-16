@@ -1,4 +1,8 @@
-export type SubscriptionStatus = 'free' | 'pro' | 'premium' | 'enterprise';
+// Plan catalogue shown on /pricing and the landing page. Only Free and Pro exist
+// in the account system (profiles.subscription_status is free | pro | cancelled);
+// Premium is displayed as "Coming soon" and cannot be bought. Every feature line
+// here must describe something the app actually does today.
+export type SubscriptionStatus = 'free' | 'pro' | 'premium';
 export type BillingInterval = 'monthly' | 'yearly';
 
 export interface SubscriptionPlan {
@@ -11,14 +15,16 @@ export interface SubscriptionPlan {
   };
   features: string[];
   limits: {
+    /** Signals per UTC day across web + Telegram; undefined = unlimited. */
     signalsPerDay?: number;
-    portfolioAssets?: number;
-    advancedAnalysis: boolean;
-    realTimeAlerts: boolean;
-    portfolioTracking: boolean;
-    tradeExecution: boolean;
-    prioritySupport: boolean;
-    apiAccess: boolean;
+    /** Coins on the watchlist (mirrors src/lib/watchlist.ts). */
+    watchlistCoins?: number;
+    /** Simulated spot / futures / staking / DCA trading and the paper portfolio. */
+    paperTrading: boolean;
+    /** New-listing / opportunity scanner (/discover). */
+    opportunityScanner: boolean;
+    /** Daily Telegram alerts for the user's coins (linked Pro accounts only). */
+    telegramAlerts: boolean;
   };
 }
 
@@ -32,20 +38,18 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionStatus, SubscriptionPlan> = 
       yearly: 0,
     },
     features: [
-      '5 AI signals per day',
-      'Basic technical analysis',
+      '5 signals per day (web and Telegram combined)',
+      'Technical analysis on 50 coins',
       'Market overview',
-      'Email support',
-      'Community access',
+      'Watchlist of up to 5 coins',
+      'Public, verifiable track record',
     ],
     limits: {
       signalsPerDay: 5,
-      advancedAnalysis: false,
-      realTimeAlerts: false,
-      portfolioTracking: false,
-      tradeExecution: false,
-      prioritySupport: false,
-      apiAccess: false,
+      watchlistCoins: 5,
+      paperTrading: false,
+      opportunityScanner: false,
+      telegramAlerts: false,
     },
   },
   pro: {
@@ -57,23 +61,20 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionStatus, SubscriptionPlan> = 
       yearly: 182, // 20% discount
     },
     features: [
-      'Unlimited AI signals',
-      'Advanced technical analysis',
-      'Real-time price alerts',
-      'Portfolio tracking',
-      'Trade execution',
-      'Priority support',
-      'Export data to CSV',
+      'Unlimited signals',
+      'Watchlist of up to 50 coins',
+      'Paper-trading suite: spot, futures, staking and DCA (simulated funds)',
+      'Portfolio tracker (log your own trades)',
+      'Opportunity scanner',
+      'Unlimited signals in Telegram (link your account)',
+      'Optional daily Telegram alerts for your coins',
     ],
     limits: {
       signalsPerDay: undefined, // unlimited
-      portfolioAssets: 20,
-      advancedAnalysis: true,
-      realTimeAlerts: true,
-      portfolioTracking: true,
-      tradeExecution: true,
-      prioritySupport: true,
-      apiAccess: false,
+      watchlistCoins: 50,
+      paperTrading: true,
+      opportunityScanner: true,
+      telegramAlerts: true,
     },
   },
   premium: {
@@ -84,51 +85,17 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionStatus, SubscriptionPlan> = 
       monthly: 49,
       yearly: 470, // 20% discount
     },
+    // Not purchasable yet (shown as "Coming soon"); nothing here is promised.
     features: [
       'Everything in Pro',
-      'Advanced AI predictions',
-      'Custom trading strategies',
-      'Unlimited portfolio assets',
-      'API access',
-      'White-glove support',
-      'Early access to features',
-    ],
-    limits: {
-      signalsPerDay: undefined, // unlimited
-      portfolioAssets: undefined, // unlimited
-      advancedAnalysis: true,
-      realTimeAlerts: true,
-      portfolioTracking: true,
-      tradeExecution: true,
-      prioritySupport: true,
-      apiAccess: true,
-    },
-  },
-  enterprise: {
-    id: 'enterprise',
-    name: 'Enterprise',
-    type: 'enterprise',
-    price: {
-      monthly: 0, // Custom pricing
-      yearly: 0,
-    },
-    features: [
-      'Everything in Premium',
-      'Custom integrations',
-      'Dedicated account manager',
-      'Custom AI models',
-      'SLA guarantee',
-      'On-premise deployment',
+      'Further features to be announced',
     ],
     limits: {
       signalsPerDay: undefined,
-      portfolioAssets: undefined,
-      advancedAnalysis: true,
-      realTimeAlerts: true,
-      portfolioTracking: true,
-      tradeExecution: true,
-      prioritySupport: true,
-      apiAccess: true,
+      watchlistCoins: 50,
+      paperTrading: true,
+      opportunityScanner: true,
+      telegramAlerts: true,
     },
   },
 };

@@ -1,8 +1,10 @@
 import { supabase } from '@/lib/supabase/client';
 
 // Simulated USD cash account powering the new paper-trading features (futures
-// margin, staking principal). Atomic balance changes go through the
-// `adjust_paper_balance` Postgres RPC (replaces Firestore runTransaction).
+// margin, staking principal). The client can only READ it: every balance change
+// happens server-side inside the purpose-built RPCs from migration 0012
+// (stake_position / unstake_position, the /api/paper/futures routes,
+// reset_paper_balance), which derive the amount from rows the client can't edit.
 
 export const STARTING_BALANCE_USD = 10_000;
 
@@ -22,11 +24,11 @@ class PaperAccountService {
 
     if (data) return { userId: uid, balanceUsd: Number(data.balance_usd) };
 
-    // Create on first access (ignore duplicate if a race created it).
-    await supabase
-      .from('paper_accounts')
-      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD }, { onConflict: 'user_id', ignoreDuplicates: true });
-    return { userId: uid, balanceUsd: STARTING_BALANCE_USD };
+    // Create on first access (race-safe upsert inside the RPC), returning the
+    // starting balance.
+    const { data: created, error } = await supabase.rpc('ensure_paper_account');
+    if (error) throw new Error(error.message);
+    return { userId: uid, balanceUsd: Number(created) };
   }
 
   async getBalance(uid: string): Promise<number> {
@@ -34,20 +36,14 @@ class PaperAccountService {
   }
 
   /**
-   * Atomically change the balance via RPC (operates on the authenticated user's
-   * account; the `uid` arg is kept for call-site compatibility). Throws on
-   * overdraft. Returns the new balance.
+   * Reset the authenticated user's cash to the starting balance via the
+   * `reset_paper_balance` RPC (the `uid` arg is kept for call-site
+   * compatibility; the server uses auth.uid()). Open stakes and futures are
+   * closed without payout in the same transaction.
    */
-  async adjustBalance(_uid: string, deltaUsd: number): Promise<number> {
-    const { data, error } = await supabase.rpc('adjust_paper_balance', { delta: deltaUsd });
+  async reset(_uid: string): Promise<void> {
+    const { error } = await supabase.rpc('reset_paper_balance');
     if (error) throw new Error(error.message);
-    return Number(data);
-  }
-
-  async reset(uid: string): Promise<void> {
-    await supabase
-      .from('paper_accounts')
-      .upsert({ user_id: uid, balance_usd: STARTING_BALANCE_USD, updated_at: new Date().toISOString() });
   }
 }
 

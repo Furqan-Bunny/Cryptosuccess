@@ -1,4 +1,6 @@
 import { supabase } from '@/lib/supabase/client';
+import { computeSignalStats } from '@/lib/signal-stats';
+import { isValidLevels, type PriceLevels } from '@/lib/recorded-levels';
 
 export interface StoredSignal {
   id?: string;
@@ -36,25 +38,83 @@ function mapRow(row: any): StoredSignal {
   };
 }
 
+export interface RecordSignalInput {
+  symbol: string;
+  action: 'BUY' | 'SELL' | 'HOLD';
+  confidence: number;
+  entryPrice: number;
+  targetPrice: number;
+  stopLoss: number;
+  reasoning: string;
+  horizon?: string;
+}
+
+export interface RecordSignalResult {
+  id: string;
+  // Free-tier signals left today after this one; -1 = unlimited (Pro).
+  remaining: number;
+  // The levels the server actually recorded (entry re-priced on live spot), or
+  // null if the response didn't include them.
+  levels: PriceLevels | null;
+}
+
+/**
+ * A failed POST /api/signals/record. `reason` is the server's machine code
+ * (limit_reached, stale_price, price_unavailable, quota_unavailable, …);
+ * `remaining` is set when the server reported the allowance; `refunded` is true
+ * only when a failed save actually gave the credit back.
+ */
+export class SignalRecordError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly status: number,
+    public readonly remaining?: number,
+    public readonly refunded: boolean = false
+  ) {
+    super(reason);
+    this.name = 'SignalRecordError';
+  }
+}
+
 class SignalHistoryService {
-  async storeSignal(signal: Omit<StoredSignal, 'id' | 'createdAt' | 'outcome'>): Promise<string> {
-    const { data, error } = await supabase
-      .from('signals')
-      .insert({
-        user_id: signal.userId,
-        symbol: signal.symbol,
-        action: signal.action,
-        confidence: signal.confidence,
-        entry_price: signal.entryPrice,
-        target_price: signal.targetPrice,
-        stop_loss: signal.stopLoss,
-        reasoning: signal.reasoning,
-        outcome: 'pending',
-      })
-      .select('id')
-      .single();
-    if (error) throw new Error(error.message);
-    return data.id;
+  /**
+   * Record a generated signal through the server (the only writer of `signals`
+   * since migration 0009). The server spends the daily credit, re-prices the
+   * entry on live spot and sets the timestamp, so the track record can't be
+   * back-filled. Throws SignalRecordError on any non-2xx.
+   */
+  async storeSignal(signal: RecordSignalInput): Promise<RecordSignalResult> {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) throw new SignalRecordError('unauthorized', 401);
+
+    let res: Response;
+    try {
+      res = await fetch('/api/signals/record', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          symbol: signal.symbol,
+          action: signal.action,
+          confidence: signal.confidence,
+          entryPrice: signal.entryPrice,
+          targetPrice: signal.targetPrice,
+          stopLoss: signal.stopLoss,
+          reasoning: signal.reasoning,
+          horizon: signal.horizon,
+        }),
+      });
+    } catch {
+      throw new SignalRecordError('network_error', 0);
+    }
+
+    const data = await res.json().catch(() => null);
+    const remaining = typeof data?.remaining === 'number' ? data.remaining : undefined;
+    if (!res.ok || !data?.ok || typeof data.id !== 'string') {
+      throw new SignalRecordError(String(data?.reason ?? 'error'), res.status, remaining, data?.refunded === true);
+    }
+    const levels = { entryPrice: data.entryPrice, targetPrice: data.targetPrice, stopLoss: data.stopLoss };
+    return { id: data.id, remaining: remaining ?? -1, levels: isValidLevels(levels) ? levels : null };
   }
 
   async getUserSignals(userId: string, maxResults = 20): Promise<StoredSignal[]> {
@@ -77,20 +137,8 @@ class SignalHistoryService {
     total: number; wins: number; losses: number; pending: number; winRate: number;
   }> {
     const signals = await this.getUserSignals(userId, 100);
-    // Only directional calls (BUY/SELL) count toward the track record. HOLD is
-    // non-directional and always scores 'expired_profit', so counting it would
-    // inflate the win rate. Exclude it from both numerator and denominator.
-    const directional = signals.filter(s => s.action !== 'HOLD');
-    const evaluated = directional.filter(s => s.outcome && s.outcome !== 'pending');
-    const wins = evaluated.filter(s => s.outcome === 'hit_target' || s.outcome === 'expired_profit').length;
-    const losses = evaluated.filter(s => s.outcome === 'hit_stop' || s.outcome === 'expired_loss').length;
-    return {
-      total: directional.length,
-      wins,
-      losses,
-      pending: directional.length - evaluated.length,
-      winRate: evaluated.length > 0 ? (wins / evaluated.length) * 100 : 0,
-    };
+    // HOLD is excluded from the win rate (see computeSignalStats).
+    return computeSignalStats(signals);
   }
 }
 

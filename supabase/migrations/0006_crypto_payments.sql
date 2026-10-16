@@ -1,7 +1,7 @@
--- Crypto payments (Coinbase Commerce) webhook idempotency.
+-- Crypto payments (NOWPayments) webhook idempotency.
 -- Run in the Supabase SQL editor after 0005.
 --
--- Coinbase Commerce retries webhook deliveries; persist processed event ids so a
+-- The crypto payment provider retries webhook (IPN) deliveries; persist processed event ids so a
 -- retry is a no-op. RLS on with no policy → only the service-role webhook can
 -- touch it (same pattern as processed_stripe_events in 0003).
 create table if not exists public.processed_crypto_events (

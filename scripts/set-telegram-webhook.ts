@@ -1,6 +1,6 @@
 /**
  * Register (or refresh) the Telegram webhook so Telegram delivers updates to our
- * app. Run AFTER deploying to a public URL (or exposing localhost via a tunnel).
+ * app, and publish the command menu. Run AFTER deploying to a public URL (or exposing localhost via a tunnel).
  *
  *   TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... NEXT_PUBLIC_APP_URL=https://your-app \
  *     npx tsx scripts/set-telegram-webhook.ts
@@ -9,7 +9,7 @@
  * echo TELEGRAM_WEBHOOK_SECRET back in the x-telegram-bot-api-secret-token header,
  * which the route verifies.
  */
-import { setWebhook } from '../src/lib/telegram/api';
+import { setWebhook, setMyCommands } from '../src/lib/telegram/api';
 
 async function main() {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
@@ -22,7 +22,8 @@ async function main() {
 
   const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/telegram/webhook`;
   await setWebhook(webhookUrl, secret);
-  console.log(`✅ Telegram webhook set → ${webhookUrl}`);
+  await setMyCommands();
+  console.log(`✅ Telegram webhook set → ${webhookUrl} (command menu updated)`);
 }
 
 main().catch(err => {

@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import SimDisclaimer from '@/components/shared/SimDisclaimer';
@@ -12,7 +12,7 @@ import { tradeExecutionService, Order } from '@/services/trade-execution.service
 import type { OrderType } from '@/types/trading.types';
 import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
 import { marketService } from '@/services/market.service';
-import { COIN_SYMBOLS, getCoinName } from '@/lib/coins';
+import { COIN_SYMBOLS, getCoinIcon, getCoinName } from '@/lib/coins';
 import {
   FaExchangeAlt,
   FaShoppingCart,
@@ -27,6 +27,9 @@ import {
   FaHistory
 } from 'react-icons/fa';
 import toast from 'react-hot-toast';
+
+// Always shown in the price sidebar, after the currently selected coin.
+const SIDEBAR_MAJORS = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP'];
 
 export default function TradePage() {
   return (
@@ -50,19 +53,21 @@ function TradePageInner() {
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [activeTab, setActiveTab] = useState<'place-order' | 'open-orders' | 'order-history'>('place-order');
 
+  // The selected coin (pinned on top when it isn't already a major) plus the
+  // majors in a stable order. Only these stream live, so the page doesn't hold
+  // 50 socket subscriptions to show a handful of prices.
+  const sidebarSymbols = useMemo(
+    () => (SIDEBAR_MAJORS.includes(selectedSymbol) ? SIDEBAR_MAJORS : [selectedSymbol, ...SIDEBAR_MAJORS]),
+    [selectedSymbol]
+  );
+
   const { prices } = useMarketData({
-    symbols: COIN_SYMBOLS,
+    symbols: sidebarSymbols,
     enableRealtime: true
   });
 
-  useEffect(() => {
-    if (user) {
-      loadPortfolio();
-      loadOrders();
-    }
-  }, [user]);
-
-  const loadPortfolio = async () => {
+  // Keyed on `user`, which useAuth keeps referentially stable across token refreshes.
+  const loadPortfolio = useCallback(async () => {
     if (!user) return;
     try {
       const data = await portfolioService.getPortfolio(user.uid);
@@ -70,9 +75,9 @@ function TradePageInner() {
     } catch (error) {
       console.error('Error loading portfolio:', error);
     }
-  };
+  }, [user]);
 
-  const loadOrders = async () => {
+  const loadOrders = useCallback(async () => {
     if (!user) return;
     try {
       const data = await tradeExecutionService.getUserOrders(user.uid);
@@ -80,7 +85,14 @@ function TradePageInner() {
     } catch (error) {
       console.error('Error loading orders:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      loadPortfolio();
+      loadOrders();
+    }
+  }, [user, loadPortfolio, loadOrders]);
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -472,7 +484,7 @@ function TradePageInner() {
               <div className="card p-6">
                 <h3 className="text-lg font-semibold text-white mb-4">Market Prices</h3>
                 <div className="space-y-4">
-                  {['ETH', 'SOL', 'BNB'].map((symbol) => {
+                  {sidebarSymbols.map((symbol) => {
                     const priceData = prices[symbol];
                     return (
                       <div
@@ -485,9 +497,13 @@ function TradePageInner() {
                         onClick={() => setSelectedSymbol(symbol)}
                       >
                         <div className="flex justify-between items-center">
-                          <span className="font-medium text-white">{symbol}</span>
+                          <span className="font-medium text-white flex items-center gap-2 min-w-0">
+                            <span aria-hidden="true">{getCoinIcon(symbol)}</span>
+                            <span>{symbol}</span>
+                            <span className="text-xs text-text-secondary truncate hidden sm:inline">{getCoinName(symbol)}</span>
+                          </span>
                           <span className="text-white">
-                            {priceData ? marketService.formatPrice(priceData.price) : '$0.00'}
+                            {priceData ? marketService.formatPrice(priceData.price) : '—'}
                           </span>
                         </div>
                         {priceData && (

@@ -1,135 +1,111 @@
 /**
- * Integration test for Stripe webhook handler logic.
- * Tests the event processing logic without hitting real APIs.
+ * Stripe webhook (stripe/webhook) — the pure event → profile mapping the route
+ * applies after verifying the signature. Imports the real helpers.
  */
+import {
+  checkoutActivationPatch,
+  checkoutUserId,
+  idOf,
+  isCheckoutPaid,
+  profileTracksSubscription,
+  subscriptionChange,
+} from '../../src/lib/stripe-events';
+import { stripePeriodEndIso } from '../../src/lib/subscription-rules';
 
-describe('Stripe Webhook Logic', () => {
-  // Helper to simulate event processing logic from webhook/route.ts
-  function processCheckoutCompleted(session: any) {
-    const userId = session.metadata?.userId || session.client_reference_id;
-    if (!userId) return null;
-    return {
-      userId,
-      update: {
-        'subscription.status': 'pro',
-        'subscription.customerId': session.customer,
-        'subscription.planId': session.subscription,
-        'subscription.currentPeriodEnd': null,
-        'subscription.signalsUsedToday': 0,
-      },
-    };
-  }
+const UID = 'd63b521b-22c9-41f0-88d4-acaf9f209434';
 
-  function processSubscriptionDeleted(subscription: any) {
-    const userId = subscription.metadata?.userId;
-    if (!userId) return null;
-    return {
-      userId,
-      update: {
-        'subscription.status': 'free',
-        'subscription.planId': null,
-        'subscription.currentPeriodEnd': null,
-      },
-    };
-  }
+describe('checkout.session.completed', () => {
+  it('takes the user from metadata, then client_reference_id', () => {
+    expect(checkoutUserId({ metadata: { userId: UID } })).toBe(UID);
+    expect(checkoutUserId({ metadata: {}, client_reference_id: UID })).toBe(UID);
+  });
 
-  function processSubscriptionUpdated(subscription: any) {
-    const userId = subscription.metadata?.userId;
-    if (!userId) return null;
-    const status = subscription.status === 'active' ? 'pro' : 'free';
-    return {
-      userId,
-      update: {
-        'subscription.status': status,
-        'subscription.currentPeriodEnd': subscription.current_period_end
-          ? new Date(subscription.current_period_end * 1000)
-          : null,
-      },
-    };
-  }
+  it('ignores ids that are not UUIDs', () => {
+    expect(checkoutUserId({ metadata: { userId: 'user123' } })).toBeNull();
+    expect(checkoutUserId({ metadata: {}, client_reference_id: 'x or 1=1' })).toBeNull();
+    expect(checkoutUserId({})).toBeNull();
+  });
 
-  describe('checkout.session.completed', () => {
-    it('extracts userId from metadata and sets subscription to pro', () => {
-      const session = {
-        metadata: { userId: 'user123' },
-        customer: 'cus_abc',
-        subscription: 'sub_xyz',
-      };
-      const result = processCheckoutCompleted(session);
-      expect(result).not.toBeNull();
-      expect(result!.userId).toBe('user123');
-      expect(result!.update['subscription.status']).toBe('pro');
-      expect(result!.update['subscription.customerId']).toBe('cus_abc');
-      expect(result!.update['subscription.signalsUsedToday']).toBe(0);
-    });
+  it('only paid or no-payment-required checkouts activate', () => {
+    expect(isCheckoutPaid('paid')).toBe(true);
+    expect(isCheckoutPaid('no_payment_required')).toBe(true);
+    expect(isCheckoutPaid('unpaid')).toBe(false);
+    expect(isCheckoutPaid(null)).toBe(false);
+  });
 
-    it('falls back to client_reference_id when metadata missing', () => {
-      const session = {
-        metadata: {},
-        client_reference_id: 'user456',
-        customer: 'cus_def',
-        subscription: 'sub_uvw',
-      };
-      const result = processCheckoutCompleted(session);
-      expect(result).not.toBeNull();
-      expect(result!.userId).toBe('user456');
-    });
-
-    it('returns null when no userId available', () => {
-      const result = processCheckoutCompleted({ metadata: {} });
-      expect(result).toBeNull();
+  it('activates Pro with the subscription id, customer and period end', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    expect(
+      checkoutActivationPatch({
+        customerId: 'cus_abc',
+        subscriptionId: 'sub_xyz',
+        periodEnd: '2026-02-01T00:00:00.000Z',
+        now,
+      })
+    ).toEqual({
+      subscription_status: 'pro',
+      customer_id: 'cus_abc',
+      plan_id: 'sub_xyz',
+      current_period_end: '2026-02-01T00:00:00.000Z',
+      signals_used_today: 0,
+      last_reset_date: now.toISOString(),
     });
   });
 
-  describe('customer.subscription.deleted', () => {
-    it('resets subscription to free', () => {
-      const subscription = { metadata: { userId: 'user123' } };
-      const result = processSubscriptionDeleted(subscription);
-      expect(result).not.toBeNull();
-      expect(result!.update['subscription.status']).toBe('free');
-      expect(result!.update['subscription.planId']).toBeNull();
-    });
+  it('reads expanded or plain references', () => {
+    expect(idOf('cus_1')).toBe('cus_1');
+    expect(idOf({ id: 'cus_2' })).toBe('cus_2');
+    expect(idOf(null)).toBeNull();
+  });
+});
 
-    it('returns null when no userId in metadata', () => {
-      const result = processSubscriptionDeleted({ metadata: {} });
-      expect(result).toBeNull();
-    });
+describe('customer.subscription.created / updated', () => {
+  const base = { subscriptionId: 'sub_1', customerId: 'cus_1', periodEnd: '2026-02-01T00:00:00.000Z' };
+
+  it('active, trialing and past_due keep the user on Pro', () => {
+    for (const status of ['active', 'trialing', 'past_due']) {
+      expect(subscriptionChange({ ...base, status })).toEqual({
+        kind: 'pro',
+        patch: {
+          subscription_status: 'pro',
+          plan_id: 'sub_1',
+          customer_id: 'cus_1',
+          current_period_end: base.periodEnd,
+        },
+      });
+    }
   });
 
-  describe('customer.subscription.updated', () => {
-    it('sets pro for active subscription', () => {
-      const subscription = {
-        metadata: { userId: 'user123' },
-        status: 'active',
-        current_period_end: 1700000000,
-      };
-      const result = processSubscriptionUpdated(subscription);
-      expect(result).not.toBeNull();
-      expect(result!.update['subscription.status']).toBe('pro');
-      expect(result!.update['subscription.currentPeriodEnd']).toBeInstanceOf(Date);
-    });
-
-    it('sets free for cancelled subscription', () => {
-      const subscription = {
-        metadata: { userId: 'user123' },
-        status: 'cancelled',
-        current_period_end: null,
-      };
-      const result = processSubscriptionUpdated(subscription);
-      expect(result!.update['subscription.status']).toBe('free');
-    });
+  it('does not wipe a known period end when Stripe omits it', () => {
+    const change = subscriptionChange({ ...base, status: 'active', periodEnd: null, customerId: null });
+    expect(change).toEqual({ kind: 'pro', patch: { subscription_status: 'pro', plan_id: 'sub_1' } });
   });
 
-  describe('webhook signature validation', () => {
-    it('rejects missing signature', () => {
-      const signature = null;
-      expect(signature).toBeNull();
-      // In the actual route, this returns 400
-    });
+  it('canceled / unpaid downgrade to free', () => {
+    for (const status of ['canceled', 'unpaid', 'incomplete_expired', 'paused']) {
+      expect(subscriptionChange({ ...base, status })).toEqual({
+        kind: 'free',
+        patch: { subscription_status: 'free', plan_id: null, current_period_end: base.periodEnd },
+      });
+    }
+  });
 
-    it('rejects empty signature', () => {
-      const signature = '';
-      expect(signature).toBeFalsy();
-    });
+  it('incomplete and unknown statuses change nothing', () => {
+    expect(subscriptionChange({ ...base, status: 'incomplete' })).toEqual({ kind: 'none' });
+    expect(subscriptionChange({ ...base, status: undefined })).toEqual({ kind: 'none' });
+  });
+
+  it('a late event for an old subscription cannot downgrade a newer plan', () => {
+    expect(profileTracksSubscription('sub_1', 'sub_1')).toBe(true);
+    expect(profileTracksSubscription(null, 'sub_1')).toBe(true);
+    expect(profileTracksSubscription('sub_2', 'sub_1')).toBe(false);
+    expect(profileTracksSubscription('crypto_monthly', 'sub_1')).toBe(false);
+  });
+
+  it('period end comes from the subscription items', () => {
+    expect(stripePeriodEndIso({ items: { data: [{ current_period_end: 1767225600 }] } })).toBe(
+      '2026-01-01T00:00:00.000Z'
+    );
+    expect(stripePeriodEndIso({ items: { data: [] } })).toBeNull();
   });
 });

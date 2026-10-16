@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
+import { isProSubscription } from '@/lib/signal-allowance';
 import { useNotifications } from '@/hooks/useNotifications';
 import NotificationPanel from './NotificationPanel';
 import { FaBars, FaBell, FaCrown } from 'react-icons/fa';
@@ -60,7 +61,7 @@ export default function Topbar({ onMenu }: { onMenu: () => void }) {
       </div>
 
       <div className="flex items-center gap-2 sm:gap-3">
-        {profile?.subscription?.status === 'free' && (
+        {profile && !isProSubscription(profile.subscription) && (
           <Link
             href="/pricing"
             className="hidden sm:flex items-center gap-1 px-3 py-1.5 bg-primary/10 text-primary rounded-full text-sm hover:bg-primary/20 transition-colors"

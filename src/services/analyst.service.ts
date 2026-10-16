@@ -30,7 +30,7 @@ const STALE_MOVE_PCT = 5;
 
 const RESEARCH_SYSTEM = `You are a crypto research assistant. Use web search to find the most recent news, catalysts, regulatory developments, and market sentiment for the given coin. Be concise and strictly factual — never invent sources or events. If little is found, say so plainly.`;
 
-const ANALYST_SYSTEM = `You are a seasoned cryptocurrency trading analyst. You are given a coin's behavior across multiple timeframes (1h/4h/1d/1w: trend, regime, volatility, momentum, position-in-range, key levels), a short-term quantitative signal, and a live news summary. Reason over ALL of it like a disciplined human trader and return TWO reads via the emit_trade_analysis tool: a short-term read (days) and a long-term read (weeks to months).
+const ANALYST_SYSTEM = `You are a seasoned cryptocurrency trading analyst. You are given a coin's behavior across multiple timeframes (1h/4h/1d/1w: trend, regime, volatility, momentum, position-in-range, key levels) and a live news summary. Reason over ALL of it like a disciplined human trader and return TWO reads via the emit_trade_analysis tool: a short-term read (days) and a long-term read (weeks to months).
 
 Hard rules:
 - You are NOT a price oracle. Short-term direction is close to unpredictable; even good traders are right ~50-55% of the time and profit through risk management, not accuracy. Calibrate conviction accordingly — use low/medium when timeframes conflict or the regime is choppy.
@@ -144,12 +144,13 @@ async function research(client: Anthropic, symbol: string, name: string): Promis
  * Quota/auth are the CALLER's responsibility. Returns null only when the model
  * returns no structured output (a 502-class failure at the call site).
  *
- * @param signal optional short-term quantitative signal to fold into the read.
+ * The take is cached per coin and shared by every user, the Telegram bot and the
+ * daily push, so it takes no caller-supplied input: everything in the prompt is
+ * fetched server-side. Never add a client-controlled argument here.
  */
 export async function generateAnalystTake(
   symbol: string,
   db: SupabaseClient,
-  signal?: unknown,
 ): Promise<GenerateResult | null> {
   const sym = symbol.toUpperCase();
 
@@ -193,7 +194,7 @@ export async function generateAnalystTake(
     research(client, sym, name),
   ]);
 
-  const userContent = JSON.stringify({ symbol: sym, name, quantSignal: signal, marketContext, newsResearch }, null, 2);
+  const userContent = JSON.stringify({ symbol: sym, name, marketContext, newsResearch }, null, 2);
 
   const resp = await client.messages.create({
     model: MODEL,

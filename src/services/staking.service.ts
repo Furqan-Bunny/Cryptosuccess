@@ -1,8 +1,9 @@
 import { supabase } from '@/lib/supabase/client';
-import { paperAccountService } from './paper-account.service';
 
 // Simulated staking. Principal (USD) is locked from the paper cash account;
-// rewards accrue lazily (computed on read) from the snapshotted APY.
+// rewards accrue lazily (computed on read) from the snapshotted APY. Cash only
+// moves inside the stake_position / unstake_position RPCs (migration 0012),
+// which use the same simple-interest formula as accruedRewards below.
 
 export interface StakingRate {
   symbol: string;
@@ -59,21 +60,16 @@ class StakingService {
     return map;
   }
 
-  async stake(uid: string, symbol: string, amountUsd: number, apy: number): Promise<{ success: boolean; error?: string }> {
-    if (!amountUsd || amountUsd <= 0) return { success: false, error: 'Enter a valid amount' };
+  /**
+   * Stake paper cash via the `stake_position` RPC (migration 0012). The server
+   * reads the APY from staking_rates and debits + records the position in one
+   * transaction, so the client never chooses the rate or the cash movement.
+   */
+  async stake(_uid: string, symbol: string, amountUsd: number): Promise<{ success: boolean; error?: string }> {
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return { success: false, error: 'Enter a valid amount' };
     try {
-      const balance = await paperAccountService.getBalance(uid);
-      if (amountUsd > balance) return { success: false, error: 'Insufficient paper balance' };
-
-      await paperAccountService.adjustBalance(uid, -amountUsd);
-      const { error } = await supabase.from('staking_positions').insert({
-        user_id: uid,
-        symbol: symbol.toUpperCase(),
-        amount_usd: amountUsd,
-        apy_snapshot: apy,
-        active: true,
-      });
-      if (error) throw new Error(error.message);
+      const { error } = await supabase.rpc('stake_position', { p_symbol: symbol.toUpperCase(), p_amount: amountUsd });
+      if (error) return { success: false, error: error.message };
       return { success: true };
     } catch (error: any) {
       console.error('Error staking:', error);
@@ -81,26 +77,16 @@ class StakingService {
     }
   }
 
-  async unstake(uid: string, positionId: string): Promise<{ success: boolean; returned?: number; error?: string }> {
+  /**
+   * Unstake via the `unstake_position` RPC: the server computes principal +
+   * rewards from the stored position and credits it in the same transaction as
+   * the close, so a double click can never pay twice.
+   */
+  async unstake(_uid: string, positionId: string): Promise<{ success: boolean; returned?: number; error?: string }> {
     try {
-      const { data: row } = await supabase
-        .from('staking_positions')
-        .select('*')
-        .eq('id', positionId)
-        .maybeSingle();
-      if (!row) return { success: false, error: 'Position not found' };
-      const pos = mapPosition(row);
-      if (pos.userId !== uid) return { success: false, error: 'Unauthorized' };
-      if (!pos.active) return { success: false, error: 'Already unstaked' };
-
-      const rewards = accruedRewards(pos);
-      const returned = pos.amountUsd + rewards;
-      await paperAccountService.adjustBalance(uid, returned);
-      await supabase
-        .from('staking_positions')
-        .update({ active: false, closed_at: new Date().toISOString() })
-        .eq('id', positionId);
-      return { success: true, returned };
+      const { data, error } = await supabase.rpc('unstake_position', { p_id: positionId });
+      if (error) return { success: false, error: error.message };
+      return { success: true, returned: Number(data) };
     } catch (error: any) {
       console.error('Error unstaking:', error);
       return { success: false, error: error?.message || 'Failed to unstake' };

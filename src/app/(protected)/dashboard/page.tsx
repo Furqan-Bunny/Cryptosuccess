@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { useMarketData } from '@/hooks/useMarketData';
 import { COIN_SYMBOLS, isSupportedCoin } from '@/lib/coins';
+import { isProSubscription, remainingFreeSignals } from '@/lib/signal-allowance';
 import { portfolioService, PortfolioSummary } from '@/services/portfolio.service';
 import { signalHistoryService } from '@/services/signal-history.service';
 import { sentimentService } from '@/services/sentiment.service';
@@ -24,9 +25,11 @@ interface SignalStats {
 }
 
 export default function DashboardPage() {
-  const { user, profile } = useAuth();
-  const isPro = profile?.subscription?.status === 'pro';
-  const signalsLeft = Math.max(0, 5 - (profile?.subscription?.signalsUsedToday || 0));
+  const { user, profile, profileError, refreshProfile } = useAuth();
+  const isPro = isProSubscription(profile?.subscription);
+  // UTC-day aware (matches consume_signal): a counter from an earlier UTC day
+  // shows the full allowance, not yesterday's leftovers.
+  const signalsLeft = remainingFreeSignals(profile?.subscription);
 
   const watchlist = useMemo(
     () => (profile?.preferences?.watchlist || []).filter(isSupportedCoin),
@@ -60,15 +63,30 @@ export default function DashboardPage() {
         <h2 className="text-3xl font-bold text-white mb-1">
           Welcome back, {user?.displayName || user?.email?.split('@')[0]}!
         </h2>
-        <p className="text-text-secondary">
-          You&apos;re on the {isPro ? 'Pro' : 'Free'} plan.
-          {!isPro && (
-            <>
-              {' '}You have {signalsLeft} signals remaining today.{' '}
-              <Link href="/pricing" className="text-primary hover:text-primary-light">Upgrade to Pro</Link>
-            </>
-          )}
-        </p>
+        {profile ? (
+          <p className="text-text-secondary">
+            You&apos;re on the {isPro ? 'Pro' : 'Free'} plan.
+            {!isPro && (
+              <>
+                {' '}You have {signalsLeft} {signalsLeft === 1 ? 'signal' : 'signals'} remaining today (resets at 00:00 UTC).{' '}
+                <Link href="/pricing" className="text-primary hover:text-primary-light">Upgrade to Pro</Link>
+              </>
+            )}
+          </p>
+        ) : (
+          <p className="text-text-secondary">
+            {profileError ? (
+              <>
+                We couldn&apos;t load your plan details.{' '}
+                <button onClick={() => refreshProfile()} className="text-primary hover:text-primary-light">
+                  Try again
+                </button>
+              </>
+            ) : (
+              'Loading your plan…'
+            )}
+          </p>
+        )}
       </div>
 
       <MetricStrip
