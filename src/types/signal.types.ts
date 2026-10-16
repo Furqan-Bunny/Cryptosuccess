@@ -1,5 +1,8 @@
 export type SignalAction = 'BUY' | 'SELL' | 'HOLD';
-export type CoinSymbol = 'ETH' | 'SOL' | 'BNB';
+// Any symbol from the coin catalogue (src/lib/coins.ts — the single source of
+// truth for the supported universe). Validate untrusted input with
+// isSupportedCoin() rather than relying on a hard-coded union here.
+export type CoinSymbol = string;
 
 export interface Signal {
   id: string;

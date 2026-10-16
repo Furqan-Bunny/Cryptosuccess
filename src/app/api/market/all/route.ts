@@ -38,18 +38,18 @@ export async function GET(request: NextRequest) {
     );
   }
   try {
-    // Get all symbols in one request
-    const symbols = Object.values(symbolMap);
-
-    // Fetch 24hr ticker data for all symbols
+    // Fetch the full 24hr ticker list in one request. (The `symbols=[...]`
+    // filter would be cheaper, but Binance rejects the WHOLE request if any one
+    // catalogue pair has been delisted, so we filter locally instead.)
     const response = await binanceGet('/api/v3/ticker/24hr');
 
-    const allTickers = response.data;
+    const tickers: any[] = Array.isArray(response.data) ? response.data : [];
+    const bySymbol = new Map<string, any>(tickers.map(t => [t.symbol, t]));
     const result: any[] = [];
 
     // Filter and format the data
     for (const [symbol, binanceSymbol] of Object.entries(symbolMap)) {
-      const ticker = allTickers.find((t: any) => t.symbol === binanceSymbol);
+      const ticker = bySymbol.get(binanceSymbol);
 
       if (ticker) {
         const marketCap = supplies[symbol] ? supplies[symbol] * parseFloat(ticker.lastPrice) : 0;
@@ -59,7 +59,8 @@ export async function GET(request: NextRequest) {
           price: parseFloat(ticker.lastPrice),
           change24h: parseFloat(ticker.priceChange),
           changePercent24h: parseFloat(ticker.priceChangePercent),
-          volume24h: parseFloat(ticker.volume),
+          // Quote (USDT) volume, so the UI's "$" volume is actually in dollars.
+          volume24h: parseFloat(ticker.quoteVolume),
           marketCap,
           lastUpdate: new Date(),
         });

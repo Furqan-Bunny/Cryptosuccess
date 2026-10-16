@@ -9,7 +9,8 @@ export interface Notification {
   title: string;
   message: string;
   read: boolean;
-  createdAt: any;
+  /** ISO-8601 timestamp string from Postgres (timestamptz). */
+  createdAt: string;
   data?: Record<string, any>;
 }
 
@@ -49,29 +50,21 @@ class NotificationService {
   }
 
   async markAsRead(notificationId: string): Promise<void> {
-    await supabase.from('notifications').update({ read: true }).eq('id', notificationId);
+    const { error } = await supabase.from('notifications').update({ read: true }).eq('id', notificationId);
+    if (error) throw new Error(error.message);
   }
 
   async markAllAsRead(userId: string): Promise<void> {
-    await supabase.from('notifications').update({ read: true }).eq('user_id', userId).eq('read', false);
+    const { error } = await supabase
+      .from('notifications')
+      .update({ read: true })
+      .eq('user_id', userId)
+      .eq('read', false);
+    if (error) throw new Error(error.message);
   }
 
-  async createNotification(notification: Omit<Notification, 'id' | 'createdAt' | 'read'>): Promise<string> {
-    const { data, error } = await supabase
-      .from('notifications')
-      .insert({
-        user_id: notification.userId,
-        type: notification.type,
-        title: notification.title,
-        message: notification.message,
-        read: false,
-        data: notification.data ?? null,
-      })
-      .select('id')
-      .single();
-    if (error) throw new Error(error.message);
-    return data.id;
-  }
+  // Notifications are produced server-side (service role), e.g. by the signal
+  // evaluation cron. Clients only read them and flip `read`.
 
   // Realtime subscription (replaces Firestore onSnapshot). Returns an
   // unsubscribe function. Refetches the list on any change for this user.
@@ -80,7 +73,20 @@ class NotificationService {
   // reused, and the whole thing is guarded so a realtime failure can never
   // crash the app (notifications simply won't be live).
   subscribeToNotifications(userId: string, callback: (notifications: Notification[]) => void): () => void {
-    this.getNotifications(userId, 20).then(callback).catch(() => callback([]));
+    // Refetches can resolve out of order; only deliver the newest one.
+    let seq = 0;
+    let closed = false;
+    const refresh = async () => {
+      const mine = ++seq;
+      try {
+        const list = await this.getNotifications(userId, 20);
+        if (!closed && mine === seq) callback(list);
+      } catch {
+        // Keep whatever is displayed; on the very first load show an empty list.
+        if (!closed && mine === 1 && seq === 1) callback([]);
+      }
+    };
+    refresh();
 
     let channel: ReturnType<typeof supabase.channel> | null = null;
     try {
@@ -89,12 +95,8 @@ class NotificationService {
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
-          async () => {
-            try {
-              callback(await this.getNotifications(userId, 20));
-            } catch {
-              /* ignore transient errors */
-            }
+          () => {
+            refresh();
           }
         )
         .subscribe();
@@ -103,6 +105,7 @@ class NotificationService {
     }
 
     return () => {
+      closed = true;
       if (channel) {
         try {
           supabase.removeChannel(channel);

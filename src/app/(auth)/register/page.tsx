@@ -8,8 +8,6 @@ import { useForm } from 'react-hook-form';
 import LoadingSpinner from '@/components/shared/LoadingSpinner';
 import { FaGoogle, FaEye, FaEyeSlash, FaCheck } from 'react-icons/fa';
 
-// v2.0 - Fixed TensorFlow initialization
-
 interface RegisterFormData {
   displayName: string;
   email: string;

@@ -7,6 +7,8 @@ import { useAuth } from '@/hooks/useAuth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { portfolioService, PortfolioSummary, Trade, PortfolioAsset } from '@/services/portfolio.service';
 import { marketService } from '@/services/market.service';
+import { COINS, isSupportedCoin } from '@/lib/coins';
+import { formatDate } from '@/lib/dates';
 import {
   FaWallet,
   FaChartLine,
@@ -83,10 +85,24 @@ function PortfolioPageInner() {
 
     if (!user) return;
 
+    const amount = parseFloat(tradeForm.amount);
+    const price = parseFloat(tradeForm.price);
+    const fee = parseFloat(tradeForm.fee || '0');
+    const keepsLegacySymbol = !!selectedTrade && selectedTrade.symbol === tradeForm.symbol;
+    if (!isSupportedCoin(tradeForm.symbol) && !keepsLegacySymbol) {
+      toast.error('Pick an asset from the list');
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(price) || price <= 0) {
+      toast.error('Amount and price must be greater than zero');
+      return;
+    }
+    if (!Number.isFinite(fee) || fee < 0) {
+      toast.error('Fee cannot be negative');
+      return;
+    }
+
     try {
-      const amount = parseFloat(tradeForm.amount);
-      const price = parseFloat(tradeForm.price);
-      const fee = parseFloat(tradeForm.fee || '0');
 
       const tradeData = {
         symbol: tradeForm.symbol,
@@ -278,9 +294,15 @@ function PortfolioPageInner() {
                     }
                     className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:border-primary focus:outline-none"
                   >
-                    <option value="ETH">Ethereum (ETH)</option>
-                    <option value="SOL">Solana (SOL)</option>
-                    <option value="BNB">Binance Coin (BNB)</option>
+                    {COINS.map(c => (
+                      <option key={c.symbol} value={c.symbol}>
+                        {c.name} ({c.symbol})
+                      </option>
+                    ))}
+                    {/* Keep a legacy, non-catalogue symbol selectable when editing an old trade. */}
+                    {!isSupportedCoin(tradeForm.symbol) && (
+                      <option value={tradeForm.symbol}>{tradeForm.symbol}</option>
+                    )}
                   </select>
                 </div>
 
@@ -309,7 +331,8 @@ function PortfolioPageInner() {
                   </label>
                   <input
                     type="number"
-                    step="0.000001"
+                    step="any"
+                    min="0"
                     value={tradeForm.amount}
                     onChange={(e) =>
                       setTradeForm({ ...tradeForm, amount: e.target.value })
@@ -326,7 +349,8 @@ function PortfolioPageInner() {
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
+                    min="0"
                     value={tradeForm.price}
                     onChange={(e) =>
                       setTradeForm({ ...tradeForm, price: e.target.value })
@@ -343,7 +367,8 @@ function PortfolioPageInner() {
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
+                    min="0"
                     value={tradeForm.fee}
                     onChange={(e) =>
                       setTradeForm({ ...tradeForm, fee: e.target.value })
@@ -514,9 +539,7 @@ function PortfolioPageInner() {
                         </p>
                         <p className="text-sm text-text-secondary">
                           at {marketService.formatPrice(trade.price)} per unit •{' '}
-                          {trade.timestamp instanceof Date
-                            ? trade.timestamp.toLocaleDateString()
-                            : new Date().toLocaleDateString()}
+                          {formatDate(trade.timestamp)}
                         </p>
                         {trade.notes && (
                           <p className="text-sm text-text-secondary mt-1">

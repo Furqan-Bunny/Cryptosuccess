@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase/client';
 import { authService, toAppUser } from '@/services/auth.service';
 import { User, UserProfile } from '@/types/user.types';
@@ -10,46 +10,97 @@ import toast from 'react-hot-toast';
 interface AuthContextType {
   user: User | null;
   profile: UserProfile | null;
+  /** Set when the last profile fetch failed (or the row was missing); cleared on success. */
+  profileError: string | null;
   loading: boolean;
   signUp: (email: string, password: string, displayName?: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  /** Re-fetch the profile. Resolves to the fresh profile, or null if it failed. */
+  refreshProfile: () => Promise<UserProfile | null>;
 }
+
+function sameUser(a: User | null, b: User | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.uid === b.uid &&
+    a.email === b.email &&
+    a.displayName === b.displayName &&
+    a.photoURL === b.photoURL &&
+    a.emailVerified === b.emailVerified
+  );
+}
+
+export const PROFILE_NOT_FOUND_MESSAGE = 'Your account profile could not be found.';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
-  const fetchUserProfile = useCallback(async (uid: string) => {
+  // Monotonic id for profile fetches: a slower, older response must never
+  // overwrite a newer one (or resurrect a profile after sign-out).
+  const fetchSeqRef = useRef(0);
+  const currentUidRef = useRef<string | null>(null);
+
+  const fetchUserProfile = useCallback(async (uid: string): Promise<UserProfile | null> => {
+    const seq = ++fetchSeqRef.current;
     try {
       const userProfile = await authService.getUserProfile(uid);
+      if (seq !== fetchSeqRef.current) return userProfile; // superseded
       setProfile(userProfile);
+      setProfileError(userProfile ? null : PROFILE_NOT_FOUND_MESSAGE);
+      return userProfile;
     } catch (error) {
       console.error('Error fetching user profile:', error);
+      if (seq === fetchSeqRef.current) {
+        // Keep any previously loaded profile (a transient refresh failure
+        // shouldn't downgrade the UI); just surface the error.
+        setProfileError(error instanceof Error ? error.message : 'Failed to load your profile.');
+      }
+      return null;
     }
   }, []);
 
   useEffect(() => {
     // onAuthStateChange fires an INITIAL_SESSION event on subscribe, so this
-    // also covers the initial load.
+    // also covers the initial load. The callback stays synchronous: awaiting
+    // other Supabase calls inside it can deadlock on the client's auth lock,
+    // so the profile fetch is deferred to the next tick.
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       const appUser = session?.user ? toAppUser(session.user) : null;
-      setUser(appUser);
-      if (appUser) {
-        await fetchUserProfile(appUser.uid);
-      } else {
+      // Keep the same object when nothing changed (e.g. hourly TOKEN_REFRESHED)
+      // so effects keyed on `user` don't refire across the app.
+      setUser(prev => (sameUser(prev, appUser) ? prev : appUser));
+
+      if (!appUser) {
+        fetchSeqRef.current += 1; // invalidate any in-flight fetch
+        currentUidRef.current = null;
         setProfile(null);
+        setProfileError(null);
+        setLoading(false);
+        return;
       }
-      setLoading(false);
+
+      if (currentUidRef.current !== appUser.uid) {
+        // Different account: never show the previous user's profile.
+        currentUidRef.current = appUser.uid;
+        setProfile(null);
+        setProfileError(null);
+      }
+
+      setTimeout(() => {
+        fetchUserProfile(appUser.uid).finally(() => setLoading(false));
+      }, 0);
     });
 
     return () => subscription.unsubscribe();
@@ -106,8 +157,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoading(true);
       await authService.signOut();
+      fetchSeqRef.current += 1;
+      currentUidRef.current = null;
       setUser(null);
       setProfile(null);
+      setProfileError(null);
       toast.success('Signed out successfully');
       router.push('/');
     } catch (error) {
@@ -131,15 +185,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const refreshProfile = async () => {
-    if (user) {
-      await fetchUserProfile(user.uid);
-    }
-  };
+  const refreshProfile = useCallback(async (): Promise<UserProfile | null> => {
+    const uid = currentUidRef.current;
+    if (!uid) return null;
+    return fetchUserProfile(uid);
+  }, [fetchUserProfile]);
 
   const value: AuthContextType = {
     user,
     profile,
+    profileError,
     loading,
     signUp,
     signIn,

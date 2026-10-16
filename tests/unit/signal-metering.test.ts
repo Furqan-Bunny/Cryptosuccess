@@ -1,8 +1,10 @@
-// Pure-logic tests mirroring the metering + track-record fixes (same DB-free
-// style as auth.service.test.ts):
-//   - getSignalStats excludes HOLD from the win rate
-//   - evaluateSignal stores direction-correct P/L for SELL (short)
+// Tests for the metering + track-record fixes:
+//   - getSignalStats excludes HOLD from the win rate (mirrors
+//     signal-history.service, which isn't exported as a pure helper yet)
+//   - the shared scorer stores direction-correct P/L for SELL (short)
 //   - the daily limit resets on a UTC calendar-day boundary (not local midnight)
+import { deriveOutcome } from '../../src/lib/signal-outcome';
+import { remainingFreeSignals } from '../../src/lib/signal-allowance';
 
 type Outcome = 'hit_target' | 'hit_stop' | 'expired_profit' | 'expired_loss' | 'pending';
 interface Sig { action: 'BUY' | 'SELL' | 'HOLD'; outcome?: Outcome }
@@ -43,12 +45,11 @@ describe('getSignalStats win-rate', () => {
   });
 });
 
-describe('evaluateSignal P/L direction', () => {
-  // Mirrors the strategy-P/L computation in evaluateSignal
-  function pl(action: 'BUY' | 'SELL', entry: number, current: number) {
-    const raw = ((current - entry) / entry) * 100;
-    return action === 'SELL' ? -raw : raw;
-  }
+describe('scored P/L direction (deriveOutcome)', () => {
+  const pl = (action: 'BUY' | 'SELL', entry: number, current: number) =>
+    deriveOutcome({ action, entryPrice: entry, targetPrice: action === 'BUY' ? 1e9 : 0, stopLoss: action === 'BUY' ? 0 : 1e9 }, current)
+      .profitLossPercent;
+
   it('SELL (short) profits when price falls — sign inverted', () => {
     expect(pl('SELL', 100, 90)).toBeCloseTo(10);    // short gained 10%
     expect(pl('SELL', 100, 110)).toBeCloseTo(-10);  // short lost 10%
@@ -59,18 +60,15 @@ describe('evaluateSignal P/L direction', () => {
   });
 });
 
-describe('daily limit UTC reset boundary', () => {
-  const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+describe('daily limit UTC reset boundary (remainingFreeSignals)', () => {
   it('resets when the last reset is an earlier UTC day', () => {
     const now = new Date('2026-06-24T00:30:00Z');
-    const lastReset = new Date('2026-06-23T23:50:00Z');
-    const used = utcDay(now) > utcDay(lastReset) ? 0 : 5;
-    expect(used).toBe(0);
+    const lastResetDate = new Date('2026-06-23T23:50:00Z');
+    expect(remainingFreeSignals({ status: 'free', signalsUsedToday: 5, lastResetDate }, now)).toBe(5);
   });
   it('does not reset within the same UTC day', () => {
     const now = new Date('2026-06-24T23:00:00Z');
-    const lastReset = new Date('2026-06-24T01:00:00Z');
-    const used = utcDay(now) > utcDay(lastReset) ? 0 : 5;
-    expect(used).toBe(5);
+    const lastResetDate = new Date('2026-06-24T01:00:00Z');
+    expect(remainingFreeSignals({ status: 'free', signalsUsedToday: 5, lastResetDate }, now)).toBe(0);
   });
 });

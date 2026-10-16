@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import { SYMBOL_TO_BINANCE, COIN_SUPPLIES } from '@/lib/coins';
+import { COIN_SUPPLIES } from '@/lib/coins';
+import { parseMarketSymbol, parseKlineInterval, parseBoundedInt, parseDepthLimit } from '@/lib/market-params';
 import { rateLimit, clientIp } from '@/lib/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,6 @@ const BINANCE_HOSTS = [
   'https://data-api.binance.vision',
   'https://api.binance.com',
 ];
-const COINGECKO_API_URL = 'https://api.coingecko.com/api/v3';
 
 async function binanceGet(path: string, params?: Record<string, string | number>) {
   let lastError: unknown;
@@ -26,10 +26,6 @@ async function binanceGet(path: string, params?: Record<string, string | number>
   throw lastError;
 }
 
-// Derived from the single coin catalogue (src/lib/coins.ts). Any symbol not in
-// the map falls back to `${symbol}USDT` at the call sites below.
-const symbolMap = SYMBOL_TO_BINANCE;
-
 export async function GET(request: NextRequest) {
   // Per-IP backstop on the public market proxy (no-ops if Upstash isn't set).
   const rl = await rateLimit('market', clientIp(request.headers), 120, 60);
@@ -41,20 +37,21 @@ export async function GET(request: NextRequest) {
   }
   try {
     const searchParams = request.nextUrl.searchParams;
-    const symbol = searchParams.get('symbol');
     const action = searchParams.get('action');
+    // Symbol -> Binance pair via the coin catalogue (src/lib/coins.ts); anything
+    // that isn't a plain ticker is rejected before it reaches Binance.
+    const parsed = parseMarketSymbol(searchParams.get('symbol'));
 
-    if (!symbol || !action) {
+    if (!parsed || !action) {
       return NextResponse.json(
-        { error: 'Missing symbol or action parameter' },
+        { error: 'Missing or invalid symbol or action parameter' },
         { status: 400 }
       );
     }
+    const { symbol, pair: binanceSymbol } = parsed;
 
     switch (action) {
       case 'price': {
-        const binanceSymbol = symbolMap[symbol] || `${symbol}USDT`;
-
         // Get price from Binance
         let priceResponse;
         try {
@@ -80,7 +77,8 @@ export async function GET(request: NextRequest) {
           price: parseFloat(data.lastPrice),
           change24h: parseFloat(data.priceChange),
           changePercent24h: parseFloat(data.priceChangePercent),
-          volume24h: parseFloat(data.volume),
+          // Quote (USDT) volume, so the UI's "$" volume is actually in dollars.
+          volume24h: parseFloat(data.quoteVolume),
           marketCap,
           lastUpdate: new Date(),
         }, {
@@ -89,9 +87,11 @@ export async function GET(request: NextRequest) {
       }
 
       case 'candles': {
-        const binanceSymbol = symbolMap[symbol] || `${symbol}USDT`;
-        const interval = searchParams.get('interval') || '1h';
-        const limit = searchParams.get('limit') || '100';
+        const interval = parseKlineInterval(searchParams.get('interval'));
+        const limit = parseBoundedInt(searchParams.get('limit'), 100, 1, 1000);
+        if (!interval || limit === null) {
+          return NextResponse.json({ error: 'Invalid interval or limit' }, { status: 400 });
+        }
 
         let response;
         try {
@@ -123,7 +123,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'funding': {
-        const binanceSymbol = symbolMap[symbol] || `${symbol}USDT`;
         try {
           const response = await axios.get('https://fapi.binance.com/fapi/v1/fundingRate', {
             params: { symbol: binanceSymbol, limit: 1 },
@@ -140,8 +139,10 @@ export async function GET(request: NextRequest) {
       }
 
       case 'orderbook': {
-        const binanceSymbol = symbolMap[symbol] || `${symbol}USDT`;
-        const limit = searchParams.get('limit') || '20';
+        const limit = parseDepthLimit(searchParams.get('limit'));
+        if (limit === null) {
+          return NextResponse.json({ error: 'Invalid limit' }, { status: 400 });
+        }
 
         let response;
         try {

@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase/client';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { User, UserProfile } from '@/types/user.types';
+import { isProStatus, remainingFreeSignals } from '@/lib/signal-allowance';
 
 // Re-export the canonical profile type for any legacy importers.
 export type { UserProfile } from '@/types/user.types';
@@ -90,13 +91,20 @@ class AuthService {
     if (error) throw new Error(this.friendly(error.message));
   }
 
+  // Returns null only when the row genuinely doesn't exist. A query/network
+  // failure THROWS, so callers can tell "no profile" apart from "couldn't load
+  // it" (e.g. ProtectedRoute must not treat a failed fetch as "not Pro").
   async getUserProfile(uid: string): Promise<UserProfile | null> {
     const { data, error } = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
-    if (error) {
-      console.error('[AuthService] getUserProfile error:', error.message);
-      return null;
-    }
+    if (error) throw new Error(error.message || 'Failed to load profile');
     return data ? mapProfileRow(data) : null;
+  }
+
+  // In-app notification opt-in (profiles.notifications). Owner RLS permits this
+  // column; the subscription-protection trigger only guards billing columns.
+  async updateNotificationPreference(uid: string, enabled: boolean): Promise<void> {
+    const { error } = await supabase.from('profiles').update({ notifications: enabled }).eq('id', uid);
+    if (error) throw new Error(error.message || 'Failed to update notification preference');
   }
 
   private async updateLastLogin(uid: string): Promise<void> {
@@ -105,28 +113,19 @@ class AuthService {
 
   async isProUser(uid: string): Promise<boolean> {
     const profile = await this.getUserProfile(uid);
-    return profile?.subscription.status === 'pro';
+    return isProStatus(profile?.subscription.status);
   }
 
-  // Read-only, DISPLAY-ONLY view of the free-tier daily signal allowance (5/day).
+  // Read-only, DISPLAY-ONLY view of the free-tier daily signal allowance.
   // The authoritative gate AND the counter mutation live server-side in the
   // `consume_signal` Postgres RPC, called by /api/ai/analyst. This method never
-  // writes — it just computes what the UI should show, UTC-correct.
+  // writes; it delegates to the shared UTC-correct helper so every screen
+  // shows the same number.
   async checkSignalLimit(uid: string): Promise<{ allowed: boolean; remaining: number }> {
     const profile = await this.getUserProfile(uid);
     if (!profile) return { allowed: false, remaining: 0 };
-    if (profile.subscription.status === 'pro') return { allowed: true, remaining: -1 };
-
-    // UTC calendar-day comparison (matches consume_signal). If the stored reset
-    // date is an earlier UTC day, the allowance has effectively refreshed.
-    const utcDay = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    const reset = new Date(profile.subscription.lastResetDate);
-    const used = utcDay(new Date()) > utcDay(reset)
-      ? 0
-      : (profile.subscription.signalsUsedToday || 0);
-
-    const remaining = Math.max(0, 5 - used);
-    return { allowed: remaining > 0, remaining };
+    const remaining = remainingFreeSignals(profile.subscription);
+    return { allowed: remaining === -1 || remaining > 0, remaining };
   }
 
   private appUrl(): string {

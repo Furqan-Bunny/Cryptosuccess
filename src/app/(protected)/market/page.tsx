@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import PriceCard from '@/components/market/PriceCard';
 import { useMarketData } from '@/hooks/useMarketData';
 import { FaRedo, FaSearch } from 'react-icons/fa';
-import { getCoinName } from '@/lib/coins';
+import { COIN_SYMBOLS, getCoinName } from '@/lib/coins';
 import { MarketPrice } from '@/services/market.service';
 
 type SortKey = 'marketCap' | 'price' | 'changePercent24h' | 'volume24h';
@@ -29,7 +29,8 @@ export default function MarketPage() {
   const [filter, setFilter] = useState<Filter>('all');
 
   const { prices, loading, error, refetch } = useMarketData({
-    symbols: ['BTC', 'ETH', 'BNB', 'SOL', 'ADA', 'XRP', 'DOGE', 'DOT', 'MATIC', 'SHIB', 'TRX', 'AVAX', 'UNI', 'ATOM', 'LTC', 'LINK', 'BCH', 'NEAR', 'ALGO', 'VET'],
+    // The whole catalogue (src/lib/coins.ts), not a hand-maintained subset.
+    symbols: COIN_SYMBOLS,
     enableRealtime: true,
   });
 
@@ -67,7 +68,7 @@ export default function MarketPage() {
               <h1 className="text-3xl font-bold text-white mb-2">Market Overview</h1>
               <p className="text-text-secondary">Real-time prices — click any coin for charts & analysis</p>
             </div>
-            <button onClick={refetch} className="btn-secondary flex items-center space-x-2" disabled={loading}>
+            <button onClick={() => refetch()} className="btn-secondary flex items-center space-x-2" disabled={loading}>
               <FaRedo className={loading ? 'animate-spin' : ''} />
               <span>Refresh</span>
             </button>
