@@ -3,7 +3,7 @@
 Cryptocurrency trading signals with a published track record, a Telegram coach, and on-chain
 anchoring so past calls cannot be edited after the fact.
 
-Live at **[cryptosuccess.vercel.app](https://cryptosuccess.vercel.app)**
+Live at **(https://www.cryptosuccess.co/)**
 
 ## What it does
 
